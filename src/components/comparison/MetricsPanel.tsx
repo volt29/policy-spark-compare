@@ -14,7 +14,7 @@ export function MetricsPanel({ offers }: MetricsPanelProps) {
   const premiums = offers
     .map(o => {
       const unified = o.data?.unified;
-      if (unified?.total_premium_after_discounts !== 'missing') {
+      if (unified && unified.total_premium_after_discounts !== 'missing') {
         return unified.total_premium_after_discounts;
       }
       return o.data?.premium?.total;

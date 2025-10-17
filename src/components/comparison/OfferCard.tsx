@@ -20,8 +20,8 @@ export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCar
   // Support both old and new unified format
   const unified = offer.data?.unified;
   
-  const premium = unified?.total_premium_after_discounts !== 'missing' 
-    ? unified?.total_premium_after_discounts 
+  const premium = unified && unified.total_premium_after_discounts !== 'missing' 
+    ? unified.total_premium_after_discounts 
     : offer.data?.premium?.total;
     
   const currency = offer.data?.premium?.currency || 'PLN';

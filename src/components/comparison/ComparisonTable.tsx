@@ -26,7 +26,7 @@ export function ComparisonTable({ offers, bestOfferIndex }: ComparisonTableProps
   // Support both old and new unified format
   const premiums = offers.map(o => {
     const unified = o.data?.unified;
-    if (unified?.total_premium_after_discounts !== 'missing') {
+    if (unified && unified.total_premium_after_discounts !== 'missing') {
       return unified.total_premium_after_discounts;
     }
     return o.data?.premium?.total || 0;
