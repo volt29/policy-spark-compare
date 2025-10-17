@@ -5,24 +5,77 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import logoIcon from "@/assets/logo-icon.png";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
+import { useEffect } from "react";
 
 export default function Auth() {
   const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (user) {
+      navigate("/dashboard");
+    }
+  }, [user, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Auth logic will be added after Lovable Cloud is enabled
-    setTimeout(() => setIsLoading(false), 1500);
+
+    const form = e.target as HTMLFormElement;
+    const email = (form.elements.namedItem("login-email") as HTMLInputElement).value;
+    const password = (form.elements.namedItem("login-password") as HTMLInputElement).value;
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      toast.error("Błąd logowania", { description: error.message });
+      setIsLoading(false);
+    } else {
+      toast.success("Zalogowano pomyślnie");
+      navigate("/dashboard");
+    }
   };
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    // Auth logic will be added after Lovable Cloud is enabled
-    setTimeout(() => setIsLoading(false), 1500);
+
+    const form = e.target as HTMLFormElement;
+    const fullName = (form.elements.namedItem("signup-name") as HTMLInputElement).value;
+    const companyName = (form.elements.namedItem("signup-company") as HTMLInputElement).value;
+    const email = (form.elements.namedItem("signup-email") as HTMLInputElement).value;
+    const password = (form.elements.namedItem("signup-password") as HTMLInputElement).value;
+
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: fullName,
+          company_name: companyName,
+        },
+        emailRedirectTo: `${window.location.origin}/dashboard`,
+      },
+    });
+
+    if (error) {
+      toast.error("Błąd rejestracji", { description: error.message });
+      setIsLoading(false);
+    } else {
+      toast.success("Konto utworzone", { 
+        description: "Sprawdź email aby aktywować konto" 
+      });
+      setIsLoading(false);
+    }
   };
 
   return (

@@ -1,25 +1,33 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft, Upload, X, FileText, Loader2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Upload, FileText, X, ArrowLeft } from "lucide-react";
-import { Link } from "react-router-dom";
-import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "sonner";
 
 export default function Compare() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [files, setFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const { toast } = useToast();
+  const [clientName, setClientName] = useState("");
+  const [productType, setProductType] = useState("");
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/auth");
+    }
+  }, [user, navigate]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newFiles = Array.from(e.target.files || []);
     if (files.length + newFiles.length > 5) {
-      toast({
-        title: "Zbyt wiele plików",
-        description: "Możesz dodać maksymalnie 5 ofert",
-        variant: "destructive",
-      });
+      toast.error("Maksymalnie 5 plików");
       return;
     }
     setFiles([...files, ...newFiles]);
@@ -32,23 +40,101 @@ export default function Compare() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (files.length < 2) {
-      toast({
-        title: "Za mało plików",
-        description: "Dodaj przynajmniej 2 oferty do porównania",
-        variant: "destructive",
-      });
+      toast.error("Dodaj minimum 2 oferty do porównania");
+      return;
+    }
+
+    if (!user) {
+      toast.error("Musisz być zalogowany");
+      navigate("/auth");
       return;
     }
 
     setIsProcessing(true);
-    // Processing logic will be added after Lovable Cloud is enabled
-    setTimeout(() => {
-      setIsProcessing(false);
-      toast({
-        title: "Porównanie rozpoczęte",
-        description: "Przetwarzamy Twoje dokumenty...",
+
+    try {
+      // 1. Upload files to Storage
+      const uploadPromises = files.map(async (file) => {
+        const fileName = `${user.id}/${Date.now()}-${file.name}`;
+        const { data, error } = await supabase.storage
+          .from("insurance-documents")
+          .upload(fileName, file);
+
+        if (error) throw error;
+        return { path: data.path, file };
       });
-    }, 2000);
+
+      const uploadedFiles = await Promise.all(uploadPromises);
+      toast.success("Pliki przesłane pomyślnie");
+
+      // 2. Create document records
+      const documentPromises = uploadedFiles.map(async ({ path, file }) => {
+        const { data, error } = await supabase
+          .from("documents")
+          .insert({
+            user_id: user.id,
+            file_name: file.name,
+            file_path: path,
+            file_size: file.size,
+            mime_type: file.type,
+            status: "uploaded",
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+        return data;
+      });
+
+      const documents = await Promise.all(documentPromises);
+      const documentIds = documents.map((d) => d.id);
+
+      // 3. Extract data from each document
+      toast.info("Ekstrahowanie danych z dokumentów...");
+      const extractionPromises = documents.map((doc) =>
+        supabase.functions.invoke("extract-insurance-data", {
+          body: { document_id: doc.id },
+        })
+      );
+
+      await Promise.all(extractionPromises);
+      toast.success("Dane wyekstrahowane pomyślnie");
+
+      // 4. Create comparison
+      const { data: comparison, error: compError } = await supabase
+        .from("comparisons")
+        .insert({
+          user_id: user.id,
+          product_type: productType || "OC/AC",
+          document_ids: documentIds,
+          status: "processing",
+        })
+        .select()
+        .single();
+
+      if (compError) throw compError;
+
+      // 5. Compare offers
+      toast.info("Porównywanie ofert...");
+      await supabase.functions.invoke("compare-offers", {
+        body: { comparison_id: comparison.id },
+      });
+
+      // 6. Generate summary
+      toast.info("Generowanie podsumowania AI...");
+      await supabase.functions.invoke("generate-summary", {
+        body: { comparison_id: comparison.id },
+      });
+
+      toast.success("Porównanie gotowe!");
+      navigate(`/comparison/${comparison.id}`);
+    } catch (error: any) {
+      console.error("Error during comparison:", error);
+      toast.error("Błąd podczas przetwarzania", { 
+        description: error.message 
+      });
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -84,11 +170,21 @@ export default function Compare() {
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="client-name">Imię i nazwisko klienta</Label>
-                    <Input id="client-name" placeholder="Jan Kowalski" />
+                    <Input
+                      id="client-name"
+                      placeholder="Jan Kowalski"
+                      value={clientName}
+                      onChange={(e) => setClientName(e.target.value)}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="product-type">Typ produktu</Label>
-                    <Input id="product-type" placeholder="OC/AC, Dom, Życie..." />
+                    <Input
+                      id="product-type"
+                      placeholder="np. OC/AC"
+                      value={productType}
+                      onChange={(e) => setProductType(e.target.value)}
+                    />
                   </div>
                 </div>
               </CardContent>
@@ -170,7 +266,14 @@ export default function Compare() {
                 </Button>
               </Link>
               <Button type="submit" disabled={files.length < 2 || isProcessing} size="lg">
-                {isProcessing ? "Przetwarzanie..." : "Rozpocznij porównanie"}
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Przetwarzanie...
+                  </>
+                ) : (
+                  "Rozpocznij porównanie"
+                )}
               </Button>
             </div>
           </form>
