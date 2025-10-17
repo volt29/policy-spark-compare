@@ -69,5 +69,36 @@ export function analyzeBestOffers(
 }
 
 export function extractCalculationId(extractedData: any): string | undefined {
+  // Check unified structure first
+  if (extractedData?.unified?.offer_id) {
+    return extractedData.unified.offer_id;
+  }
+  
+  // Fallback to old format
   return extractedData?.calculation_id || extractedData?.calculationId;
+}
+
+/**
+ * Get premium from extracted data (supports both old and new format)
+ */
+export function getPremium(extractedData: any): number | null {
+  // Try unified structure first
+  if (extractedData?.unified?.total_premium_after_discounts) {
+    const premium = extractedData.unified.total_premium_after_discounts;
+    return premium === 'missing' ? null : premium;
+  }
+  
+  // Fallback to old format
+  if (extractedData?.premium?.total) {
+    return parseFloat(extractedData.premium.total);
+  }
+  
+  return null;
+}
+
+/**
+ * Check if data uses new unified format
+ */
+export function hasUnifiedFormat(extractedData: any): boolean {
+  return !!extractedData?.unified;
 }

@@ -10,8 +10,15 @@ interface MetricsPanelProps {
 }
 
 export function MetricsPanel({ offers }: MetricsPanelProps) {
+  // Support both old and new unified format
   const premiums = offers
-    .map(o => o.data?.premium?.total)
+    .map(o => {
+      const unified = o.data?.unified;
+      if (unified?.total_premium_after_discounts !== 'missing') {
+        return unified.total_premium_after_discounts;
+      }
+      return o.data?.premium?.total;
+    })
     .filter(p => p != null) as number[];
   
   const coverages = offers

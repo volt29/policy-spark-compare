@@ -23,7 +23,14 @@ export function ComparisonTable({ offers, bestOfferIndex }: ComparisonTableProps
     setExpandedRows(prev => ({ ...prev, [rowId]: !prev[rowId] }));
   };
 
-  const premiums = offers.map(o => o.data?.premium?.total || 0);
+  // Support both old and new unified format
+  const premiums = offers.map(o => {
+    const unified = o.data?.unified;
+    if (unified?.total_premium_after_discounts !== 'missing') {
+      return unified.total_premium_after_discounts;
+    }
+    return o.data?.premium?.total || 0;
+  });
   const lowestPremium = Math.min(...premiums.filter(p => p > 0));
 
   const coverages = offers.map(o => o.data?.coverage?.oc?.sum || 0);

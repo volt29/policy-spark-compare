@@ -1,5 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
+import { parsePdfText, combinePagesText } from './pdf-parser.ts';
+import { segmentInsuranceSections, calculateExtractionConfidence } from './classifier.ts';
+import { buildUnifiedOffer } from './unified-builder.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -170,10 +173,25 @@ serve(async (req) => {
     
     const mimeType = document.mime_type || 'application/pdf';
     
+    // Step 1: Try to extract text from PDF
+    let parsedText = '';
+    let parsedPages: string[] = [];
+    let useTextExtraction = false;
+    
+    if (mimeType === 'application/pdf') {
+      console.log('📖 Step 11a: Attempting text extraction from PDF...');
+      const parseResult = await parsePdfText(bytes);
+      
+      if (parseResult.success && parseResult.pages.length > 0) {
+        parsedText = combinePagesText(parseResult.pages);
+        parsedPages = parseResult.pages.map(p => p.text);
+        useTextExtraction = parsedText.length > 100; // Only use if we got meaningful text
+        console.log(`✅ Text extraction ${useTextExtraction ? 'successful' : 'insufficient'}: ${parsedText.length} chars`);
+      }
+    }
+    
     // Prepare image content array for AI
-    let imageContent: Array<{ type: string; image_url?: { url: string }; text?: string }> = [
-      { type: 'text', text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego:' }
-    ];
+    let imageContent: Array<{ type: string; image_url?: { url: string }; text?: string }> = [];
     
     // Handle PDFs - convert to JPG and use base64 directly
     if (mimeType === 'application/pdf') {
@@ -204,16 +222,40 @@ serve(async (req) => {
         throw new Error(`Converted images too large (${totalSizeMB.toFixed(1)}MB). Please use a smaller PDF or fewer pages.`);
       }
       
-      // Build content array with base64 data URLs
-      imageContent = [
-        { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
-        ...base64Pages.map(base64 => ({
-          type: 'image_url',
-          image_url: { url: `data:image/jpeg;base64,${base64}` }
-        }))
-      ];
-      
-      console.log(`✅ Step 14: Prepared ${base64Pages.length} image(s) as base64 data URLs`);
+      // Build content array - prefer text if available
+      if (useTextExtraction && parsedText) {
+        // Step 2: Classify sections from extracted text
+        console.log('🔍 Step 14a: Classifying document sections...');
+        const sections = segmentInsuranceSections(parsedPages);
+        const textConfidence = calculateExtractionConfidence(sections);
+        console.log(`📊 Section classification complete (confidence: ${textConfidence})`);
+        
+        imageContent = [
+          { type: 'text', text: `Ekstrahuj dane z dokumentu ubezpieczeniowego. Tekst z dokumentu:\n\n${parsedText.slice(0, 8000)}` },
+          { type: 'text', text: `\n\nSekcje zidentyfikowane: ${sections.map(s => s.type).join(', ')}` }
+        ];
+        
+        // Add first page image for visual confirmation
+        if (base64Pages.length > 0) {
+          imageContent.push({
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${base64Pages[0]}` }
+          });
+        }
+        
+        console.log(`✅ Step 14: Using text extraction with ${sections.length} classified sections + 1 image`);
+      } else {
+        // Fallback to image-only approach
+        imageContent = [
+          { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
+          ...base64Pages.map(base64 => ({
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${base64}` }
+          }))
+        ];
+        
+        console.log(`✅ Step 14: Prepared ${base64Pages.length} image(s) as base64 data URLs (text extraction failed)`);
+      }
       
     } else if (['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
       console.log('✅ Step 11: Detected image format, using base64...');
@@ -235,10 +277,10 @@ serve(async (req) => {
       throw new Error(`Unsupported file type: ${mimeType}`);
     }
 
-    // Define JSON Schema for structured extraction
+    // Define JSON Schema for structured extraction (updated for unified structure)
     const extractionSchema = {
       name: "extract_insurance_data",
-      description: "Extract structured data from insurance policy document",
+      description: "Extract structured data from insurance policy document in unified format",
       parameters: {
         type: "object",
         properties: {
@@ -246,53 +288,125 @@ serve(async (req) => {
             type: "string",
             description: "Name of the insurance company"
           },
+          calculation_id: {
+            type: "string",
+            description: "Calculation or offer ID from document"
+          },
           product_type: {
             type: "string",
-            description: "Type of insurance product (e.g., 'OC/AC', 'Życie', 'Majątek')"
+            description: "Type of insurance product"
           },
+          insured: {
+            type: "array",
+            description: "List of insured persons with their plans",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                age: { type: "number" },
+                role: { type: "string" },
+                plans: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      type: { type: "string" },
+                      sum: { type: "number" },
+                      premium: { type: "number" },
+                      variant: { type: "string" },
+                      duration: { type: "string" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          base_contracts: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                sum: { type: "number" },
+                premium: { type: "number" },
+                variant: { type: "string" }
+              }
+            }
+          },
+          additional_contracts: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                coverage: { type: "string" },
+                premium: { type: "number" }
+              }
+            }
+          },
+          discounts: {
+            type: "array",
+            items: { type: "string" }
+          },
+          total_premium_before_discounts: {
+            type: "number",
+            description: "Total premium before any discounts"
+          },
+          total_premium_after_discounts: {
+            type: "number",
+            description: "Final total premium after discounts"
+          },
+          assistance: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                coverage: { type: "string" },
+                limits: { type: "string" }
+              }
+            }
+          },
+          duration: {
+            type: "object",
+            properties: {
+              start: { type: "string" },
+              end: { type: "string" },
+              variant: { type: "string" }
+            }
+          },
+          notes: {
+            type: "array",
+            items: { type: "string" }
+          },
+          // Legacy fields for backward compatibility
           coverage: {
             type: "object",
-            description: "Coverage details with amounts",
             additionalProperties: true
           },
           exclusions: {
             type: "array",
-            description: "List of coverage exclusions",
             items: { type: "string" }
           },
           deductible: {
             type: "object",
-            description: "Deductible information",
             properties: {
               amount: { type: "string" },
               currency: { type: "string" }
             }
           },
-          assistance: {
-            type: "array",
-            description: "List of assistance services",
-            items: { type: "string" }
-          },
           premium: {
             type: "object",
-            description: "Premium information",
             properties: {
               total: { type: "string" },
               currency: { type: "string" },
               period: { type: "string" }
-            },
-            required: ["total"]
+            }
           },
-          valid_from: {
-            type: "string",
-            description: "Policy start date (ISO format or natural language)"
-          },
-          valid_to: {
-            type: "string",
-            description: "Policy end date (ISO format or natural language)"
-          }
+          valid_from: { type: "string" },
+          valid_to: { type: "string" }
         },
-        required: ["insurer", "product_type", "premium"]
+        required: ["insurer"]
       }
     };
 
@@ -321,7 +435,14 @@ serve(async (req) => {
             messages: [
               {
                 role: 'system',
-                content: 'Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. Ekstrahuj wszystkie istotne informacje z dokumentu.'
+                content: `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. 
+Ekstrahuj informacje zgodnie z zunifikowanym schematem:
+- Priorytetowo używaj danych z tekstu dokumentu
+- Dla składek: szukaj "total_premium_before_discounts" i "total_premium_after_discounts"
+- Dla ubezpieczonych: szukaj imion, wieku i przypisanych planów
+- Dla assistance: wypisz pełne nazwy usług z limity
+- Dla zniżek: wymień wszystkie rabaty i promocje
+- Oznacz brakujące wartości jako null lub pomiń pole`
               },
               {
                 role: 'user',
@@ -418,13 +539,52 @@ serve(async (req) => {
       };
     }
 
-    console.log('✅ Step 21: Updating document with extracted data...');
+    console.log('✅ Step 21: Building unified offer structure...');
+    
+    // Step 3: Build unified offer structure
+    let unifiedOffer;
+    if (useTextExtraction && parsedPages.length > 0) {
+      const sections = segmentInsuranceSections(parsedPages);
+      unifiedOffer = buildUnifiedOffer(
+        sections,
+        {
+          documentId: document_id,
+          fileName: document.file_name,
+          calculationId: extractedData?.calculation_id || extractedData?.calculationId
+        },
+        extractedData
+      );
+    } else {
+      // Fallback: build from AI data only
+      unifiedOffer = buildUnifiedOffer(
+        [],
+        {
+          documentId: document_id,
+          fileName: document.file_name,
+          calculationId: extractedData?.calculation_id || extractedData?.calculationId
+        },
+        extractedData
+      );
+    }
+    
+    console.log('✅ Step 22: Unified offer structure complete');
+    console.log(`📊 Offer ID: ${unifiedOffer.offer_id}`);
+    console.log(`📊 Confidence: ${unifiedOffer.extraction_confidence}`);
+    console.log(`📊 Missing fields: ${unifiedOffer.missing_fields.length}`);
+    
+    // Merge unified structure with original extracted data for backward compatibility
+    const finalData = {
+      ...extractedData, // Keep original AI extraction
+      unified: unifiedOffer // Add unified structure
+    };
+    
+    console.log('✅ Step 23: Updating document with extracted data...');
     
     // Update document with extracted data
     const { error: updateError } = await supabase
       .from('documents')
       .update({
-        extracted_data: extractedData,
+        extracted_data: finalData,
         status: 'completed'
       })
       .eq('id', document_id);
@@ -433,12 +593,16 @@ serve(async (req) => {
       throw new Error(`Failed to update document: ${updateError.message}`);
     }
 
-    console.log('✅ Step 22: Document processed successfully:', document_id);
+    console.log('✅ Step 24: Document processed successfully:', document_id);
 
     // Note: No cleanup needed - we're using base64 directly, not storage
 
     return new Response(
-      JSON.stringify({ success: true, data: extractedData }),
+      JSON.stringify({ 
+        success: true, 
+        data: finalData,
+        unified: unifiedOffer 
+      }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
