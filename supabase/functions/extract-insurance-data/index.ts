@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
+import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -50,30 +51,146 @@ serve(async (req) => {
       throw new Error(`Failed to download file: ${downloadError.message}`);
     }
 
-    // Convert to base64 for AI processing using chunked processing
+    // Convert to base64 for AI processing
     const arrayBuffer = await fileData.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     
-    // Check file size before processing (20MB limit for base64)
     const fileSizeMB = bytes.length / (1024 * 1024);
-    if (fileSizeMB > 20) {
-      throw new Error(`Plik jest za duży (${fileSizeMB.toFixed(1)}MB). Maksymalny rozmiar: 20MB. Spróbuj zmniejszyć rozdzielczość lub użyć kompresji.`);
-    }
+    console.log(`File size: ${fileSizeMB.toFixed(2)}MB`);
     
-    let binary = '';
-    const chunkSize = 8192; // Process 8KB at a time to avoid call stack limit
-    
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-      binary += String.fromCharCode.apply(null, Array.from(chunk));
-    }
-    
-    const base64 = btoa(binary);
     const mimeType = document.mime_type || 'application/pdf';
     
-    console.log(`File size: ${fileSizeMB.toFixed(2)}MB, Base64 length: ${base64.length}`);
+    // Helper function to convert bytes to base64
+    const bytesToBase64 = (bytes: Uint8Array): string => {
+      let binary = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+        binary += String.fromCharCode.apply(null, Array.from(chunk));
+      }
+      return btoa(binary);
+    };
+    
+    // Prepare image content array for AI
+    const imageContent: Array<{ type: string; image_url?: { url: string }; text?: string }> = [
+      { type: 'text', text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego:' }
+    ];
+    
+    // Handle PDFs differently - extract first 3 pages as separate images
+    if (mimeType === 'application/pdf') {
+      try {
+        console.log('Processing PDF - extracting first 3 pages...');
+        const pdfDoc = await PDFDocument.load(bytes);
+        const totalPages = pdfDoc.getPageCount();
+        const pagesToExtract = Math.min(3, totalPages);
+        
+        console.log(`PDF has ${totalPages} pages, extracting ${pagesToExtract} pages`);
+        
+        for (let i = 0; i < pagesToExtract; i++) {
+          // Create a new PDF with just one page
+          const singlePagePdf = await PDFDocument.create();
+          const [copiedPage] = await singlePagePdf.copyPages(pdfDoc, [i]);
+          singlePagePdf.addPage(copiedPage);
+          
+          // Convert to bytes
+          const pdfBytes = await singlePagePdf.save();
+          const base64 = bytesToBase64(new Uint8Array(pdfBytes));
+          
+          console.log(`Page ${i + 1}: ${(pdfBytes.length / 1024).toFixed(1)}KB`);
+          
+          imageContent.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:application/pdf;base64,${base64}`
+            }
+          });
+        }
+      } catch (error) {
+        console.error('PDF page extraction failed, using full PDF:', error);
+        // Fallback to sending full PDF as single image
+        const base64 = bytesToBase64(bytes);
+        imageContent.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${mimeType};base64,${base64}`
+          }
+        });
+      }
+    } else {
+      // For JPG/PNG/WEBP - send as single image
+      const base64 = bytesToBase64(bytes);
+      imageContent.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${mimeType};base64,${base64}`
+        }
+      });
+    }
+    
+    console.log(`Prepared ${imageContent.length - 1} image(s) for AI processing`);
 
-    // Call Lovable AI to extract structured data with timeout
+    // Define JSON Schema for structured extraction
+    const extractionSchema = {
+      name: "extract_insurance_data",
+      description: "Extract structured data from insurance policy document",
+      parameters: {
+        type: "object",
+        properties: {
+          insurer: {
+            type: "string",
+            description: "Name of the insurance company"
+          },
+          product_type: {
+            type: "string",
+            description: "Type of insurance product (e.g., 'OC/AC', 'Życie', 'Majątek')"
+          },
+          coverage: {
+            type: "object",
+            description: "Coverage details with amounts",
+            additionalProperties: true
+          },
+          exclusions: {
+            type: "array",
+            description: "List of coverage exclusions",
+            items: { type: "string" }
+          },
+          deductible: {
+            type: "object",
+            description: "Deductible information",
+            properties: {
+              amount: { type: "string" },
+              currency: { type: "string" }
+            }
+          },
+          assistance: {
+            type: "array",
+            description: "List of assistance services",
+            items: { type: "string" }
+          },
+          premium: {
+            type: "object",
+            description: "Premium information",
+            properties: {
+              total: { type: "string" },
+              currency: { type: "string" },
+              period: { type: "string" }
+            },
+            required: ["total"]
+          },
+          valid_from: {
+            type: "string",
+            description: "Policy start date (ISO format or natural language)"
+          },
+          valid_to: {
+            type: "string",
+            description: "Policy end date (ISO format or natural language)"
+          }
+        },
+        required: ["insurer", "product_type", "premium"]
+      }
+    };
+
+    // Call Lovable AI with tool calling for structured extraction
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
 
@@ -87,40 +204,27 @@ serve(async (req) => {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: 'google/gemini-2.5-pro',
+          model: 'google/gemini-2.5-flash',
           messages: [
             {
               role: 'system',
-              content: `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. 
-              Ekstrahuj strukturalne dane z dokumentu i zwróć JSON z polami:
-              - insurer (string): nazwa ubezpieczyciela
-              - product_type (string): typ produktu (np. "OC/AC", "Życie", "Majątek")
-              - coverage (object): zakres ubezpieczenia z kwotami
-              - exclusions (array): lista wyłączeń
-              - deductible (object): franszyza {amount, currency}
-              - assistance (array): lista świadczeń assistance
-              - premium (object): składka {total, currency, period}
-              - valid_from (string): data rozpoczęcia
-              - valid_to (string): data zakończenia
-              
-              Jeśli jakieś pole nie jest dostępne, zwróć null. Zwróć TYLKO JSON bez dodatkowego tekstu.`
+              content: 'Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. Ekstrahuj wszystkie istotne informacje z dokumentu.'
             },
             {
               role: 'user',
-              content: [
-                {
-                  type: 'text',
-                  text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego:'
-                },
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:${mimeType};base64,${base64}`
-                  }
-                }
-              ]
+              content: imageContent
             }
-          ]
+          ],
+          tools: [
+            {
+              type: "function",
+              function: extractionSchema
+            }
+          ],
+          tool_choice: {
+            type: "function",
+            function: { name: "extract_insurance_data" }
+          }
         }),
       });
       clearTimeout(timeoutId);
@@ -145,19 +249,35 @@ serve(async (req) => {
     }
 
     const aiData = await aiResponse.json();
-    const extractedText = aiData.choices[0].message.content;
+    console.log('AI response received');
     
-    // Parse JSON from AI response
+    // Extract structured data from tool call
     let extractedData;
     try {
-      // Remove markdown code blocks if present
-      const jsonMatch = extractedText.match(/```json\n?([\s\S]*?)\n?```/) || 
-                       extractedText.match(/```\n?([\s\S]*?)\n?```/);
-      const jsonText = jsonMatch ? jsonMatch[1] : extractedText;
-      extractedData = JSON.parse(jsonText.trim());
+      const message = aiData.choices[0].message;
+      
+      if (message.tool_calls && message.tool_calls.length > 0) {
+        // Data extracted via tool calling (structured)
+        const toolCall = message.tool_calls[0];
+        extractedData = JSON.parse(toolCall.function.arguments);
+        console.log('Structured data extracted via tool calling');
+      } else if (message.content) {
+        // Fallback: try to parse content as JSON
+        const extractedText = message.content;
+        const jsonMatch = extractedText.match(/```json\n?([\s\S]*?)\n?```/) || 
+                         extractedText.match(/```\n?([\s\S]*?)\n?```/);
+        const jsonText = jsonMatch ? jsonMatch[1] : extractedText;
+        extractedData = JSON.parse(jsonText.trim());
+        console.log('Data extracted from content (fallback)');
+      } else {
+        throw new Error('No tool call or content in AI response');
+      }
     } catch (parseError) {
-      console.error('Failed to parse AI response as JSON:', extractedText);
-      extractedData = { raw_text: extractedText, parse_error: true };
+      console.error('Failed to parse AI response:', parseError);
+      extractedData = { 
+        error: 'Failed to extract structured data',
+        raw_response: aiData.choices[0].message 
+      };
     }
 
     // Update document with extracted data
@@ -192,11 +312,24 @@ serve(async (req) => {
         const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
         const supabase = createClient(supabaseUrl, supabaseKey);
         
+        // Get current attempt count
+        const { data: currentDoc } = await supabase
+          .from('documents')
+          .select('extracted_data')
+          .eq('id', document_id)
+          .single();
+        
+        const attemptCount = (currentDoc?.extracted_data?.attempt_count || 0) + 1;
+        
         await supabase
           .from('documents')
           .update({ 
             status: 'failed',
-            extracted_data: { error: errorMessage }
+            extracted_data: { 
+              error: errorMessage,
+              failed_at: new Date().toISOString(),
+              attempt_count: attemptCount
+            }
           })
           .eq('id', document_id);
         
