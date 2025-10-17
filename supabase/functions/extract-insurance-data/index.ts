@@ -303,7 +303,15 @@ serve(async (req) => {
               type: "object",
               properties: {
                 name: { type: "string" },
-                age: { type: "number" },
+                age: {
+                  anyOf: [
+                    { type: "number" },
+                    {
+                      type: "string",
+                      description: "Age as number string, e.g. '38'"
+                    }
+                  ]
+                },
                 role: { type: "string" },
                 plans: {
                   type: "array",
@@ -311,8 +319,24 @@ serve(async (req) => {
                     type: "object",
                     properties: {
                       type: { type: "string" },
-                      sum: { type: "number" },
-                      premium: { type: "number" },
+                      sum: {
+                        anyOf: [
+                          { type: "number" },
+                          {
+                            type: "string",
+                            description: "Sum insured as number string, e.g. '50000' or '50 000 PLN'"
+                          }
+                        ]
+                      },
+                      premium: {
+                        anyOf: [
+                          { type: "number" },
+                          {
+                            type: "string",
+                            description: "Premium amount as number string, e.g. '123.45'"
+                          }
+                        ]
+                      },
                       variant: { type: "string" },
                       duration: { type: "string" }
                     }
@@ -327,8 +351,24 @@ serve(async (req) => {
               type: "object",
               properties: {
                 name: { type: "string" },
-                sum: { type: "number" },
-                premium: { type: "number" },
+                sum: {
+                  anyOf: [
+                    { type: "number" },
+                    {
+                      type: "string",
+                      description: "Coverage sum as number string"
+                    }
+                  ]
+                },
+                premium: {
+                  anyOf: [
+                    { type: "number" },
+                    {
+                      type: "string",
+                      description: "Premium amount as number string"
+                    }
+                  ]
+                },
                 variant: { type: "string" }
               }
             }
@@ -340,7 +380,15 @@ serve(async (req) => {
               properties: {
                 name: { type: "string" },
                 coverage: { type: "string" },
-                premium: { type: "number" }
+                premium: {
+                  anyOf: [
+                    { type: "number" },
+                    {
+                      type: "string",
+                      description: "Premium amount as number string"
+                    }
+                  ]
+                }
               }
             }
           },
@@ -349,11 +397,23 @@ serve(async (req) => {
             items: { type: "string" }
           },
           total_premium_before_discounts: {
-            type: "number",
+            anyOf: [
+              { type: "number" },
+              {
+                type: "string",
+                description: "Total premium before discounts as number string"
+              }
+            ],
             description: "Total premium before any discounts"
           },
           total_premium_after_discounts: {
-            type: "number",
+            anyOf: [
+              { type: "number" },
+              {
+                type: "string",
+                description: "Total premium after discounts as number string"
+              }
+            ],
             description: "Final total premium after discounts"
           },
           assistance: {

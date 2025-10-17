@@ -2,6 +2,30 @@
 
 import { ParsedSection } from './classifier.ts';
 
+function parseNumberValue(value: unknown): number | null {
+  if (typeof value === 'number' && !Number.isNaN(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const sanitized = value
+      .replace(/[^0-9,.-]/g, '')
+      .replace(/\.(?=\d{3}(?:\D|$))/g, '')
+      .replace(/,(?=\d{3}(?:\D|$))/g, '')
+      .replace(',', '.');
+
+    const match = sanitized.match(/-?\d+(?:\.\d+)?/);
+    if (match) {
+      const parsed = Number.parseFloat(match[0]);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
 export interface UnifiedOffer {
   offer_id: string;
   source_document: string;
@@ -11,22 +35,22 @@ export interface UnifiedOffer {
     role: string;
     plans: Array<{
       type: string;
-      sum: number;
-      premium: number;
+      sum: number | 'missing';
+      premium: number | 'missing';
       variant: string;
       duration: string;
     }>;
   }>;
   base_contracts: Array<{
     name: string;
-    sum: number;
-    premium: number;
+    sum: number | 'missing';
+    premium: number | 'missing';
     variant: string;
   }>;
   additional_contracts: Array<{
     name: string;
     coverage: string;
-    premium: number;
+    premium: number | 'missing';
   }>;
   discounts: string[];
   total_premium_before_discounts: number | 'missing';
@@ -70,10 +94,10 @@ export function buildUnifiedOffer(
   
   // Build insured array
   const insured = buildInsuredArray(sections, aiExtractedData, missingFields);
-  
+
   // Build contracts
-  const baseContracts = buildBaseContracts(sections, aiExtractedData);
-  const additionalContracts = buildAdditionalContracts(sections, aiExtractedData);
+  const baseContracts = buildBaseContracts(sections, aiExtractedData, missingFields);
+  const additionalContracts = buildAdditionalContracts(sections, aiExtractedData, missingFields);
   
   // Extract discounts
   const discounts = extractDiscounts(sections, aiExtractedData);
@@ -120,12 +144,50 @@ function buildInsuredArray(
 ): UnifiedOffer['insured'] {
   const insuredSections = sections.filter(s => s.type === 'insured');
   const insured: UnifiedOffer['insured'] = [];
-  
+
   // Try to extract from AI data first
-  if (aiData?.insured && Array.isArray(aiData.insured)) {
-    return aiData.insured;
+  if (aiData?.insured && Array.isArray(aiData.insured) && aiData.insured.length > 0) {
+    return aiData.insured.map((person: any, personIndex: number) => {
+      const ageValue = parseNumberValue(person.age);
+      if (ageValue === null) {
+        missingFields.push(`insured[${personIndex}].age`);
+      }
+
+      const plans = Array.isArray(person.plans)
+        ? person.plans.map((plan: any, planIndex: number) => {
+            const sumValue = parseNumberValue(plan.sum);
+            if (sumValue === null) {
+              missingFields.push(`insured[${personIndex}].plans[${planIndex}].sum`);
+            }
+
+            const premiumValue = parseNumberValue(plan.premium);
+            if (premiumValue === null) {
+              missingFields.push(`insured[${personIndex}].plans[${planIndex}].premium`);
+            }
+
+            return {
+              type: plan.type || 'Nieznany plan',
+              sum: sumValue ?? 'missing',
+              premium: premiumValue ?? 'missing',
+              variant: plan.variant || 'standard',
+              duration: plan.duration || 'missing'
+            };
+          })
+        : [];
+
+      if (plans.length === 0) {
+        missingFields.push(`insured[${personIndex}].plans`);
+      }
+
+      return {
+        name: person.name || 'missing',
+        age: ageValue ?? 'missing',
+        role: person.role || 'ubezpieczony',
+        plans
+      };
+    });
   }
-  
+
   // Fallback: create at least one insured entry
   if (insuredSections.length === 0 && !aiData?.insured) {
     missingFields.push('insured');
@@ -142,25 +204,55 @@ function buildInsuredArray(
 
 function buildBaseContracts(
   sections: ParsedSection[],
-  aiData: any
+  aiData: any,
+  missingFields: string[]
 ): UnifiedOffer['base_contracts'] {
   // Prefer AI extraction for structured data
   if (aiData?.base_contracts && Array.isArray(aiData.base_contracts)) {
-    return aiData.base_contracts;
+    return aiData.base_contracts.map((contract: any, index: number) => {
+      const sumValue = parseNumberValue(contract.sum);
+      if (sumValue === null) {
+        missingFields.push(`base_contracts[${index}].sum`);
+      }
+
+      const premiumValue = parseNumberValue(contract.premium);
+      if (premiumValue === null) {
+        missingFields.push(`base_contracts[${index}].premium`);
+      }
+
+      return {
+        name: contract.name || 'Umowa podstawowa',
+        sum: sumValue ?? 'missing',
+        premium: premiumValue ?? 'missing',
+        variant: contract.variant || 'standard'
+      };
+    });
   }
-  
+
   // Fallback to empty array
   return [];
 }
 
 function buildAdditionalContracts(
   sections: ParsedSection[],
-  aiData: any
+  aiData: any,
+  missingFields: string[]
 ): UnifiedOffer['additional_contracts'] {
   if (aiData?.additional_contracts && Array.isArray(aiData.additional_contracts)) {
-    return aiData.additional_contracts;
+    return aiData.additional_contracts.map((contract: any, index: number) => {
+      const premiumValue = parseNumberValue(contract.premium);
+      if (premiumValue === null) {
+        missingFields.push(`additional_contracts[${index}].premium`);
+      }
+
+      return {
+        name: contract.name || 'Umowa dodatkowa',
+        coverage: contract.coverage || 'missing',
+        premium: premiumValue ?? 'missing'
+      };
+    });
   }
-  
+
   return [];
 }
 
@@ -191,16 +283,21 @@ function extractPremiums(
 ): { beforeDiscounts: number | 'missing'; afterDiscounts: number | 'missing' } {
   let beforeDiscounts: number | 'missing' = 'missing';
   let afterDiscounts: number | 'missing' = 'missing';
-  
+
   // Try AI data first
-  if (aiData?.total_premium_before_discounts != null) {
-    beforeDiscounts = parseFloat(aiData.total_premium_before_discounts);
+  const beforeValue = parseNumberValue(aiData?.total_premium_before_discounts);
+  if (beforeValue !== null) {
+    beforeDiscounts = beforeValue;
   }
-  
-  if (aiData?.total_premium_after_discounts != null) {
-    afterDiscounts = parseFloat(aiData.total_premium_after_discounts);
-  } else if (aiData?.premium?.total != null) {
-    afterDiscounts = parseFloat(aiData.premium.total);
+
+  const afterValue = parseNumberValue(aiData?.total_premium_after_discounts);
+  if (afterValue !== null) {
+    afterDiscounts = afterValue;
+  } else {
+    const legacyPremium = parseNumberValue(aiData?.premium?.total);
+    if (legacyPremium !== null) {
+      afterDiscounts = legacyPremium;
+    }
   }
   
   if (beforeDiscounts === 'missing') {
@@ -265,7 +362,7 @@ function calculateConfidence(
   
   // Check section identification rate
   const identifiedSections = sections.filter(s => s.type !== 'unknown').length;
-  const ratio = identifiedSections / sections.length;
+  const ratio = sections.length > 0 ? identifiedSections / sections.length : 0;
   
   if (ratio > 0.7 && missingFields.length === 0) return 'high';
   if (ratio > 0.5) return 'medium';
