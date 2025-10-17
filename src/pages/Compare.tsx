@@ -9,12 +9,14 @@ import { Label } from "@/components/ui/label";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { sanitizeFileName } from "@/lib/sanitizeFileName";
 
 export default function Compare() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [files, setFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingStage, setProcessingStage] = useState<string>("");
   const [clientName, setClientName] = useState("");
   const [productType, setProductType] = useState("");
 
@@ -26,11 +28,34 @@ export default function Compare() {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newFiles = Array.from(e.target.files || []);
+    
+    // Validation 1: Max 5 files
     if (files.length + newFiles.length > 5) {
       toast.error("Maksymalnie 5 plików");
       return;
     }
+    
+    // Validation 2: Max file size (10MB)
+    const oversized = newFiles.filter(f => f.size > 10 * 1024 * 1024);
+    if (oversized.length > 0) {
+      toast.error("Plik za duży", { 
+        description: `Maksymalny rozmiar: 10MB. Plik "${oversized[0].name}" jest za duży.` 
+      });
+      return;
+    }
+    
+    // Validation 3: Allowed file types
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    const invalidTypes = newFiles.filter(f => !allowedTypes.includes(f.type));
+    if (invalidTypes.length > 0) {
+      toast.error("Nieprawidłowy format", { 
+        description: "Akceptowane formaty: PDF, JPG, PNG, WEBP" 
+      });
+      return;
+    }
+    
     setFiles([...files, ...newFiles]);
+    toast.success(`Dodano ${newFiles.length} plik(ów)`);
   };
 
   const removeFile = (index: number) => {
@@ -54,8 +79,10 @@ export default function Compare() {
 
     try {
       // 1. Upload files to Storage
+      setProcessingStage("Przesyłanie plików...");
       const uploadPromises = files.map(async (file) => {
-        const fileName = `${user.id}/${Date.now()}-${file.name}`;
+        const safeName = sanitizeFileName(file.name);
+        const fileName = `${user.id}/${Date.now()}-${safeName}`;
         const { data, error } = await supabase.storage
           .from("insurance-documents")
           .upload(fileName, file);
@@ -90,7 +117,7 @@ export default function Compare() {
       const documentIds = documents.map((d) => d.id);
 
       // 3. Extract data from each document
-      toast.info("Ekstrahowanie danych z dokumentów...");
+      setProcessingStage("Ekstrahowanie danych z dokumentów...");
       const extractionPromises = documents.map((doc) =>
         supabase.functions.invoke("extract-insurance-data", {
           body: { document_id: doc.id },
@@ -115,25 +142,39 @@ export default function Compare() {
       if (compError) throw compError;
 
       // 5. Compare offers
-      toast.info("Porównywanie ofert...");
+      setProcessingStage("Porównywanie ofert...");
       await supabase.functions.invoke("compare-offers", {
         body: { comparison_id: comparison.id },
       });
 
       // 6. Generate summary
-      toast.info("Generowanie podsumowania AI...");
+      setProcessingStage("Generowanie podsumowania AI...");
       await supabase.functions.invoke("generate-summary", {
         body: { comparison_id: comparison.id },
       });
 
       toast.success("Porównanie gotowe!");
+      setProcessingStage("");
       navigate(`/comparison/${comparison.id}`);
     } catch (error: any) {
       console.error("Error during comparison:", error);
+      
+      // Parse specific errors
+      let errorMessage = "Wystąpił błąd podczas przetwarzania";
+      
+      if (error.message?.includes("Invalid key")) {
+        errorMessage = "Błąd: Nazwa pliku zawiera niedozwolone znaki. Spróbuj zmienić nazwę pliku.";
+      } else if (error.message?.includes("storage")) {
+        errorMessage = "Błąd przesyłania pliku. Sprawdź czy plik nie jest za duży (max 10MB).";
+      } else if (error.message?.includes("functions")) {
+        errorMessage = "Błąd przetwarzania AI. Spróbuj ponownie za chwilę.";
+      }
+      
       toast.error("Błąd podczas przetwarzania", { 
-        description: error.message 
+        description: errorMessage
       });
       setIsProcessing(false);
+      setProcessingStage("");
     }
   };
 
@@ -269,7 +310,7 @@ export default function Compare() {
                 {isProcessing ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Przetwarzanie...
+                    {processingStage || "Przetwarzanie..."}
                   </>
                 ) : (
                   "Rozpocznij porównanie"

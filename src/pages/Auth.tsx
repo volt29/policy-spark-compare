@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useRef } from "react";
 import logoIcon from "@/assets/logo-icon.png";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
@@ -14,6 +15,7 @@ import { useEffect } from "react";
 
 export default function Auth() {
   const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("login");
   const navigate = useNavigate();
   const { user } = useAuth();
 
@@ -71,10 +73,15 @@ export default function Auth() {
       toast.error("Błąd rejestracji", { description: error.message });
       setIsLoading(false);
     } else {
-      toast.success("Konto utworzone", { 
-        description: "Sprawdź email aby aktywować konto" 
+      toast.success("Konto utworzone!", { 
+        description: "Możesz się teraz zalogować" 
       });
       setIsLoading(false);
+      
+      // Switch to login tab after 1.5 seconds
+      setTimeout(() => {
+        setActiveTab("login");
+      }, 1500);
     }
   };
 
@@ -103,7 +110,7 @@ export default function Auth() {
             </div>
           </CardHeader>
           <CardContent>
-            <Tabs defaultValue="login" className="space-y-4">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="login">Logowanie</TabsTrigger>
                 <TabsTrigger value="signup">Rejestracja</TabsTrigger>
