@@ -6,11 +6,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Helper: Convert PDF to JPG using ConvertAPI
+// Helper: Convert PDF to JPG using ConvertAPI - returns base64 encoded JPGs
 async function convertPdfToJpgs(
   pdfBytes: Uint8Array,
   maxPages: number = 3
-): Promise<{ jpgUrls: string[], sizes: number[] }> {
+): Promise<{ base64Pages: string[], sizes: number[] }> {
   const convertApiSecret = Deno.env.get('CONVERTAPI_SECRET');
   console.log('📝 ConvertAPI: Secret present?', !!convertApiSecret);
   console.log('📝 ConvertAPI: Input size', pdfBytes.length, 'bytes');
@@ -46,7 +46,10 @@ async function convertPdfToJpgs(
   }
   
   const result = await response.json();
-  console.log('📝 ConvertAPI: Result', JSON.stringify(result, null, 2));
+  console.log('📝 ConvertAPI: Result structure', { 
+    hasFiles: !!result.Files, 
+    filesCount: result.Files?.length || 0 
+  });
   
   // Validate response structure
   if (!result.Files || !Array.isArray(result.Files) || result.Files.length === 0) {
@@ -54,53 +57,27 @@ async function convertPdfToJpgs(
     throw new Error('ConvertAPI returned invalid response: no Files array');
   }
   
-  const jpgUrls: string[] = [];
+  const base64Pages: string[] = [];
   const sizes: number[] = [];
   
-  for (const file of result.Files) {
-    jpgUrls.push(file.Url);
+  for (let i = 0; i < result.Files.length; i++) {
+    const file = result.Files[i];
+    
+    // Validate that FileData exists
+    if (!file.FileData) {
+      console.error(`❌ ConvertAPI: File ${i + 1} missing FileData`, file);
+      throw new Error(`ConvertAPI File ${i + 1} has no FileData - check ConvertAPI configuration`);
+    }
+    
+    base64Pages.push(file.FileData);
     sizes.push(file.FileSize);
+    console.log(`✅ Page ${i + 1}: ${(file.FileSize / 1024).toFixed(1)}KB`);
   }
   
-  return { jpgUrls, sizes };
+  return { base64Pages, sizes };
 }
 
-// Helper: Upload JPG to Supabase Storage and return signed URL
-async function uploadJpgToStorage(
-  supabase: any,
-  jpgUrl: string,
-  documentId: string,
-  pageNum: number
-): Promise<string> {
-  // Download JPG from ConvertAPI
-  const jpgResponse = await fetch(jpgUrl);
-  const jpgBlob = await jpgResponse.blob();
-  const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
-  
-  // Upload to Storage
-  const filePath = `${documentId}/page-${pageNum}.jpg`;
-  const { error: uploadError } = await supabase.storage
-    .from('tmp-ai-inputs')
-    .upload(filePath, jpgBytes, {
-      contentType: 'image/jpeg',
-      upsert: true
-    });
-  
-  if (uploadError) {
-    throw new Error(`Storage upload failed: ${uploadError.message}`);
-  }
-  
-  // Generate signed URL (10 min TTL)
-  const { data: signedUrlData, error: signedError } = await supabase.storage
-    .from('tmp-ai-inputs')
-    .createSignedUrl(filePath, 600);
-  
-  if (signedError || !signedUrlData?.signedUrl) {
-    throw new Error(`Failed to generate signed URL: ${signedError?.message || 'Unknown error'}`);
-  }
-  
-  return signedUrlData.signedUrl;
-}
+// Helper removed: No longer uploading to storage, using base64 directly
 
 // Helper: Cleanup temporary files
 async function cleanupTempFiles(supabase: any, documentId: string) {
@@ -198,47 +175,45 @@ serve(async (req) => {
       { type: 'text', text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego:' }
     ];
     
-    // Handle PDFs - convert to JPG and use signed URLs
+    // Handle PDFs - convert to JPG and use base64 directly
     if (mimeType === 'application/pdf') {
       console.log('✅ Step 11: Detected PDF, starting conversion...');
       
-      // Convert PDF to JPG (max 3 pages)
-      const { jpgUrls, sizes } = await convertPdfToJpgs(bytes, 3);
-      console.log(`✅ Step 12: Converted to ${jpgUrls.length} JPG(s), sizes:`, sizes.map(s => `${(s / 1024).toFixed(1)}KB`));
-      
-      // Upload JPGs to Storage and get signed URLs
-      const signedUrls: string[] = [];
-      let totalSize = 0;
-      
-      for (let i = 0; i < jpgUrls.length; i++) {
-        console.log(`✅ Step 13.${i + 1}: Uploading JPG ${i + 1}/${jpgUrls.length} to storage...`);
-        const signedUrl = await uploadJpgToStorage(
-          supabase,
-          jpgUrls[i],
-          document_id!,
-          i + 1
-        );
-        signedUrls.push(signedUrl);
-        totalSize += sizes[i];
-        console.log(`✅ Step 13.${i + 1}: JPG ${i + 1} uploaded, signed URL generated`);
+      // Determine max pages based on file size (degradation)
+      let maxPages = 3;
+      if (fileSizeMB > 15) {
+        maxPages = 1;
+        console.log('⚠️ Large PDF (>15MB): limiting to 1 page');
+      } else if (fileSizeMB > 10) {
+        maxPages = 2;
+        console.log('⚠️ Medium PDF (>10MB): limiting to 2 pages');
       }
       
-      // Check payload limit (6 MB)
+      // Convert PDF to JPG base64
+      const { base64Pages, sizes } = await convertPdfToJpgs(bytes, maxPages);
+      console.log(`✅ Step 12: Converted to ${base64Pages.length} JPG(s), sizes:`, sizes.map(s => `${(s / 1024).toFixed(1)}KB`));
+      
+      // Calculate total size
+      const totalSize = sizes.reduce((sum, size) => sum + size, 0);
+      const totalSizeMB = totalSize / (1024 * 1024);
+      console.log(`✅ Step 13: Total payload size: ${totalSizeMB.toFixed(2)}MB`);
+      
+      // Check payload limit (6 MB for base64)
       if (totalSize > 6 * 1024 * 1024) {
-        console.warn(`⚠️ Total size ${(totalSize / 1024 / 1024).toFixed(2)}MB exceeds 6MB`);
-        // For now, proceed but this could trigger degradation in future
+        console.warn(`⚠️ Total size ${totalSizeMB.toFixed(2)}MB exceeds 6MB limit`);
+        throw new Error(`Converted images too large (${totalSizeMB.toFixed(1)}MB). Please use a smaller PDF or fewer pages.`);
       }
       
-      // Build content array with signed URLs
+      // Build content array with base64 data URLs
       imageContent = [
-        { type: 'text', text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego (strony 1-3):' },
-        ...signedUrls.map(url => ({
+        { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
+        ...base64Pages.map(base64 => ({
           type: 'image_url',
-          image_url: { url }
+          image_url: { url: `data:image/jpeg;base64,${base64}` }
         }))
       ];
       
-      console.log(`✅ Step 14: Prepared ${signedUrls.length} image(s) with signed URLs`);
+      console.log(`✅ Step 14: Prepared ${base64Pages.length} image(s) as base64 data URLs`);
       
     } else if (['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
       console.log('✅ Step 11: Detected image format, using base64...');
@@ -378,19 +353,20 @@ serve(async (req) => {
           // Check if we should retry with degradation
           if ((errorText.includes('Failed to extract') || errorText.includes('too large')) && retryCount < maxRetries) {
             retryCount++;
-            console.log(`Degrading: reducing to 1 page and retrying...`);
+            console.log(`⚠️ Degrading: reducing to 1 page and retrying...`);
             
             // Degradation: use only page 1 with lower quality
             if (mimeType === 'application/pdf') {
-              await cleanupTempFiles(supabase, document_id!); // Clean old files first
-              
-              const { jpgUrls } = await convertPdfToJpgs(bytes, 1); // Only page 1
-              const signedUrl = await uploadJpgToStorage(supabase, jpgUrls[0], document_id!, 1);
+              const { base64Pages } = await convertPdfToJpgs(bytes, 1); // Only page 1
               
               imageContent = [
                 { type: 'text', text: 'Ekstrahuj dane z pierwszej strony dokumentu:' },
-                { type: 'image_url', image_url: { url: signedUrl } }
+                { 
+                  type: 'image_url', 
+                  image_url: { url: `data:image/jpeg;base64,${base64Pages[0]}` } 
+                }
               ];
+              console.log('✅ Degradation: using only 1 page as base64');
             }
           } else {
             throw new Error(`AI API error: ${aiResponse.status} - ${errorText}`);
@@ -459,12 +435,7 @@ serve(async (req) => {
 
     console.log('✅ Step 22: Document processed successfully:', document_id);
 
-    // Cleanup temporary files (async, don't wait)
-    if (mimeType === 'application/pdf' && document_id) {
-      cleanupTempFiles(supabase, document_id).catch(err => 
-        console.error('Background cleanup error:', err)
-      );
-    }
+    // Note: No cleanup needed - we're using base64 directly, not storage
 
     return new Response(
       JSON.stringify({ success: true, data: extractedData }),
@@ -500,9 +471,6 @@ serve(async (req) => {
           .eq('id', document_id);
         
         console.log('Document status updated to failed:', document_id);
-        
-        // Cleanup temp files on error too
-        await cleanupTempFiles(supabase, document_id);
       } catch (updateError) {
         console.error('Failed to update document status:', updateError);
       }
