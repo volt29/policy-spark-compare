@@ -11,15 +11,23 @@ async function convertPdfToJpgs(
   pdfBytes: Uint8Array,
   maxPages: number = 3
 ): Promise<{ jpgUrls: string[], sizes: number[] }> {
-  const convertApiSecret = Deno.env.get('CONVERTAPI_SECRET')!;
+  const convertApiSecret = Deno.env.get('CONVERTAPI_SECRET');
+  console.log('📝 ConvertAPI: Secret present?', !!convertApiSecret);
+  console.log('📝 ConvertAPI: Input size', pdfBytes.length, 'bytes');
+  
+  if (!convertApiSecret) {
+    throw new Error('CONVERTAPI_SECRET is not configured');
+  }
   
   const formData = new FormData();
-  // Create a File object from the Uint8Array for FormData compatibility
-  const pdfFile = new File([pdfBytes as any], 'document.pdf', { type: 'application/pdf' });
-  formData.append('File', pdfFile);
+  // Create a Blob object from the Uint8Array for better Deno compatibility
+  const pdfBlob = new Blob([pdfBytes as any], { type: 'application/pdf' });
+  formData.append('File', pdfBlob, 'document.pdf');
   formData.append('PageRange', `1-${maxPages}`);
   formData.append('ImageResolution', '150'); // DPI
   formData.append('JpgQuality', '70'); // 0-100
+  
+  console.log('📝 ConvertAPI: Sending request...');
   
   const response = await fetch(
     `https://v2.convertapi.com/convert/pdf/to/jpg?Secret=${convertApiSecret}`,
@@ -29,12 +37,23 @@ async function convertPdfToJpgs(
     }
   );
   
+  console.log('📝 ConvertAPI: Response status', response.status);
+  
   if (!response.ok) {
     const errorText = await response.text();
+    console.error('❌ ConvertAPI: Error response', errorText);
     throw new Error(`ConvertAPI failed: ${response.status} - ${errorText}`);
   }
   
   const result = await response.json();
+  console.log('📝 ConvertAPI: Result', JSON.stringify(result, null, 2));
+  
+  // Validate response structure
+  if (!result.Files || !Array.isArray(result.Files) || result.Files.length === 0) {
+    console.error('❌ ConvertAPI: Invalid response format', result);
+    throw new Error('ConvertAPI returned invalid response: no Files array');
+  }
+  
   const jpgUrls: string[] = [];
   const sizes: number[] = [];
   
@@ -103,6 +122,8 @@ async function cleanupTempFiles(supabase: any, documentId: string) {
 }
 
 serve(async (req) => {
+  console.log('🚀 EXTRACT-INSURANCE-DATA v2.0 - STARTED', new Date().toISOString());
+  
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -111,15 +132,21 @@ serve(async (req) => {
   let supabase: any;
   
   try {
+    console.log('✅ Step 1: Request received');
+    
     const body = await req.json();
+    console.log('✅ Step 2: Body parsed', { document_id: body.document_id });
+    
     document_id = body.document_id;
-    console.log('Processing document:', document_id);
+    console.log('✅ Step 3: Document ID extracted:', document_id);
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const lovableApiKey = Deno.env.get('LOVABLE_API_KEY')!;
+    console.log('✅ Step 4: Env vars loaded');
 
     supabase = createClient(supabaseUrl, supabaseKey);
+    console.log('✅ Step 5: Supabase client created');
 
     // Get document details
     const { data: document, error: docError } = await supabase
@@ -127,16 +154,25 @@ serve(async (req) => {
       .select('*')
       .eq('id', document_id)
       .single();
+    
+    console.log('✅ Step 6: Document fetched', { exists: !!document, error: !!docError });
 
     if (docError || !document) {
       throw new Error('Document not found');
     }
+    
+    console.log('✅ Step 7: Document details', { 
+      mime_type: document.mime_type, 
+      file_path: document.file_path 
+    });
 
     // Update status to processing
     await supabase
       .from('documents')
       .update({ status: 'processing' })
       .eq('id', document_id);
+    
+    console.log('✅ Step 8: Status updated to processing');
 
     // Download file from storage
     const { data: fileData, error: downloadError } = await supabase.storage
@@ -146,12 +182,14 @@ serve(async (req) => {
     if (downloadError) {
       throw new Error(`Failed to download file: ${downloadError.message}`);
     }
+    
+    console.log('✅ Step 9: File downloaded from storage');
 
     const arrayBuffer = await fileData.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     
     const fileSizeMB = bytes.length / (1024 * 1024);
-    console.log(`File size: ${fileSizeMB.toFixed(2)}MB`);
+    console.log(`✅ Step 10: File size: ${fileSizeMB.toFixed(2)}MB`);
     
     const mimeType = document.mime_type || 'application/pdf';
     
@@ -162,17 +200,18 @@ serve(async (req) => {
     
     // Handle PDFs - convert to JPG and use signed URLs
     if (mimeType === 'application/pdf') {
-      console.log('Converting PDF to JPG...');
+      console.log('✅ Step 11: Detected PDF, starting conversion...');
       
       // Convert PDF to JPG (max 3 pages)
       const { jpgUrls, sizes } = await convertPdfToJpgs(bytes, 3);
-      console.log(`Converted to ${jpgUrls.length} JPG(s), sizes:`, sizes.map(s => `${(s / 1024).toFixed(1)}KB`));
+      console.log(`✅ Step 12: Converted to ${jpgUrls.length} JPG(s), sizes:`, sizes.map(s => `${(s / 1024).toFixed(1)}KB`));
       
       // Upload JPGs to Storage and get signed URLs
       const signedUrls: string[] = [];
       let totalSize = 0;
       
       for (let i = 0; i < jpgUrls.length; i++) {
+        console.log(`✅ Step 13.${i + 1}: Uploading JPG ${i + 1}/${jpgUrls.length} to storage...`);
         const signedUrl = await uploadJpgToStorage(
           supabase,
           jpgUrls[i],
@@ -181,11 +220,12 @@ serve(async (req) => {
         );
         signedUrls.push(signedUrl);
         totalSize += sizes[i];
+        console.log(`✅ Step 13.${i + 1}: JPG ${i + 1} uploaded, signed URL generated`);
       }
       
       // Check payload limit (6 MB)
       if (totalSize > 6 * 1024 * 1024) {
-        console.warn(`Total size ${(totalSize / 1024 / 1024).toFixed(2)}MB exceeds 6MB`);
+        console.warn(`⚠️ Total size ${(totalSize / 1024 / 1024).toFixed(2)}MB exceeds 6MB`);
         // For now, proceed but this could trigger degradation in future
       }
       
@@ -198,9 +238,10 @@ serve(async (req) => {
         }))
       ];
       
-      console.log(`Prepared ${signedUrls.length} image(s) with signed URLs`);
+      console.log(`✅ Step 14: Prepared ${signedUrls.length} image(s) with signed URLs`);
       
     } else if (['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+      console.log('✅ Step 11: Detected image format, using base64...');
       // For images: use base64 directly (no conversion needed)
       const base64 = btoa(String.fromCharCode(...bytes));
       
@@ -214,7 +255,7 @@ serve(async (req) => {
         image_url: { url: `data:${mimeType};base64,${base64}` }
       });
       
-      console.log('Using image directly (base64)');
+      console.log('✅ Step 12: Image prepared as base64');
     } else {
       throw new Error(`Unsupported file type: ${mimeType}`);
     }
@@ -280,6 +321,8 @@ serve(async (req) => {
       }
     };
 
+    console.log('✅ Step 15: Calling Lovable AI Gateway...');
+    
     // Call Lovable AI with retry logic
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
@@ -290,6 +333,7 @@ serve(async (req) => {
     
     while (retryCount <= maxRetries) {
       try {
+        console.log(`✅ Step 16.${retryCount + 1}: Sending AI request (attempt ${retryCount + 1}/${maxRetries + 1})...`);
         aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -322,11 +366,14 @@ serve(async (req) => {
           }),
         });
         
+        console.log('✅ Step 17: AI response received, status:', aiResponse.status);
+        
         if (aiResponse.ok) {
+          console.log('✅ Step 18: AI request successful!');
           break; // Success - exit retry loop
         } else {
           const errorText = await aiResponse.text();
-          console.error(`AI API error (attempt ${retryCount + 1}):`, errorText);
+          console.error(`❌ AI API error (attempt ${retryCount + 1}):`, errorText);
           
           // Check if we should retry with degradation
           if ((errorText.includes('Failed to extract') || errorText.includes('too large')) && retryCount < maxRetries) {
@@ -365,11 +412,12 @@ serve(async (req) => {
     }
 
     const aiData = await aiResponse.json();
-    console.log('AI response received');
+    console.log('✅ Step 19: AI response parsed successfully');
     
     // Extract structured data from tool call
     let extractedData;
     try {
+      console.log('✅ Step 20: Extracting structured data from AI response...');
       const message = aiData.choices[0].message;
       
       if (message.tool_calls && message.tool_calls.length > 0) {
@@ -394,6 +442,8 @@ serve(async (req) => {
       };
     }
 
+    console.log('✅ Step 21: Updating document with extracted data...');
+    
     // Update document with extracted data
     const { error: updateError } = await supabase
       .from('documents')
@@ -407,7 +457,7 @@ serve(async (req) => {
       throw new Error(`Failed to update document: ${updateError.message}`);
     }
 
-    console.log('Document processed successfully:', document_id);
+    console.log('✅ Step 22: Document processed successfully:', document_id);
 
     // Cleanup temporary files (async, don't wait)
     if (mimeType === 'application/pdf' && document_id) {
