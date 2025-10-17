@@ -125,7 +125,42 @@ export default function Compare() {
       );
 
       await Promise.all(extractionPromises);
-      toast.success("Dane wyekstrahowane pomyślnie");
+      
+      // 3.5. Wait for extraction to complete (polling)
+      setProcessingStage("Czekam na ekstrakcję danych...");
+      const maxAttempts = 30; // 30 * 2s = 60s timeout
+      let attempts = 0;
+      
+      while (attempts < maxAttempts) {
+        const { data: docs } = await supabase
+          .from('documents')
+          .select('id, status, extracted_data')
+          .in('id', documentIds);
+        
+        if (!docs) {
+          throw new Error('Nie można sprawdzić statusu dokumentów');
+        }
+        
+        const allCompleted = docs.every(d => d.status === 'completed');
+        const anyFailed = docs.some(d => d.status === 'failed');
+        
+        if (allCompleted) {
+          toast.success("Dane wyekstrahowane pomyślnie");
+          break;
+        }
+        
+        if (anyFailed) {
+          const failedDocs = docs.filter(d => d.status === 'failed');
+          throw new Error(`Nie udało się przetworzyć ${failedDocs.length} dokumentu(ów). Spróbuj ponownie z innymi plikami.`);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s
+        attempts++;
+      }
+      
+      if (attempts >= maxAttempts) {
+        throw new Error('Przekroczono limit czasu przetwarzania dokumentów. Spróbuj ponownie z mniejszymi plikami.');
+      }
 
       // 4. Create comparison
       const { data: comparison, error: compError } = await supabase

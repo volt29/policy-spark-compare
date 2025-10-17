@@ -11,8 +11,11 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  let document_id: string | undefined;
+  
   try {
-    const { document_id } = await req.json();
+    const body = await req.json();
+    document_id = body.document_id;
     console.log('Processing document:', document_id);
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -47,55 +50,78 @@ serve(async (req) => {
       throw new Error(`Failed to download file: ${downloadError.message}`);
     }
 
-    // Convert to base64 for AI processing
+    // Convert to base64 for AI processing using chunked processing
     const arrayBuffer = await fileData.arrayBuffer();
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    const chunkSize = 8192; // Process 8KB at a time to avoid call stack limit
+    
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+    
+    const base64 = btoa(binary);
     const mimeType = document.mime_type || 'application/pdf';
 
-    // Call Lovable AI to extract structured data
-    const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${lovableApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-pro',
-        messages: [
-          {
-            role: 'system',
-            content: `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. 
-            Ekstrahuj strukturalne dane z dokumentu i zwróć JSON z polami:
-            - insurer (string): nazwa ubezpieczyciela
-            - product_type (string): typ produktu (np. "OC/AC", "Życie", "Majątek")
-            - coverage (object): zakres ubezpieczenia z kwotami
-            - exclusions (array): lista wyłączeń
-            - deductible (object): franszyza {amount, currency}
-            - assistance (array): lista świadczeń assistance
-            - premium (object): składka {total, currency, period}
-            - valid_from (string): data rozpoczęcia
-            - valid_to (string): data zakończenia
-            
-            Jeśli jakieś pole nie jest dostępne, zwróć null. Zwróć TYLKO JSON bez dodatkowego tekstu.`
-          },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego:'
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:${mimeType};base64,${base64}`
+    // Call Lovable AI to extract structured data with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+
+    let aiResponse;
+    try {
+      aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${lovableApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: 'google/gemini-2.5-flash',
+          messages: [
+            {
+              role: 'system',
+              content: `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. 
+              Ekstrahuj strukturalne dane z dokumentu i zwróć JSON z polami:
+              - insurer (string): nazwa ubezpieczyciela
+              - product_type (string): typ produktu (np. "OC/AC", "Życie", "Majątek")
+              - coverage (object): zakres ubezpieczenia z kwotami
+              - exclusions (array): lista wyłączeń
+              - deductible (object): franszyza {amount, currency}
+              - assistance (array): lista świadczeń assistance
+              - premium (object): składka {total, currency, period}
+              - valid_from (string): data rozpoczęcia
+              - valid_to (string): data zakończenia
+              
+              Jeśli jakieś pole nie jest dostępne, zwróć null. Zwróć TYLKO JSON bez dodatkowego tekstu.`
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Ekstrahuj dane z tego dokumentu ubezpieczeniowego:'
+                },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${mimeType};base64,${base64}`
+                  }
                 }
-              }
-            ]
-          }
-        ]
-      }),
-    });
+              ]
+            }
+          ]
+        }),
+      });
+      clearTimeout(timeoutId);
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        throw new Error('AI processing timeout - file may be too large or complex');
+      }
+      throw error;
+    }
 
     if (!aiResponse.ok) {
       const errorText = await aiResponse.text();
@@ -142,6 +168,28 @@ serve(async (req) => {
     console.error('Error in extract-insurance-data:', error);
     
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    // Update document status to 'failed' so it doesn't stay stuck in 'processing'
+    if (document_id) {
+      try {
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+        const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        
+        await supabase
+          .from('documents')
+          .update({ 
+            status: 'failed',
+            extracted_data: { error: errorMessage }
+          })
+          .eq('id', document_id);
+        
+        console.log('Document status updated to failed:', document_id);
+      } catch (updateError) {
+        console.error('Failed to update document status:', updateError);
+      }
+    }
+    
     return new Response(
       JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
