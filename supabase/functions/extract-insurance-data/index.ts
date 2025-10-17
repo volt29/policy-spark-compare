@@ -303,15 +303,7 @@ serve(async (req) => {
               type: "object",
               properties: {
                 name: { type: "string" },
-                age: {
-                  anyOf: [
-                    { type: "number" },
-                    {
-                      type: "string",
-                      description: "Age as number string, e.g. '38'"
-                    }
-                  ]
-                },
+                age: { type: "number" },
                 role: { type: "string" },
                 plans: {
                   type: "array",
@@ -319,24 +311,8 @@ serve(async (req) => {
                     type: "object",
                     properties: {
                       type: { type: "string" },
-                      sum: {
-                        anyOf: [
-                          { type: "number" },
-                          {
-                            type: "string",
-                            description: "Sum insured as number string, e.g. '50000' or '50 000 PLN'"
-                          }
-                        ]
-                      },
-                      premium: {
-                        anyOf: [
-                          { type: "number" },
-                          {
-                            type: "string",
-                            description: "Premium amount as number string, e.g. '123.45'"
-                          }
-                        ]
-                      },
+                      sum: { type: "number" },
+                      premium: { type: "number" },
                       variant: { type: "string" },
                       duration: { type: "string" }
                     }
@@ -351,24 +327,8 @@ serve(async (req) => {
               type: "object",
               properties: {
                 name: { type: "string" },
-                sum: {
-                  anyOf: [
-                    { type: "number" },
-                    {
-                      type: "string",
-                      description: "Coverage sum as number string"
-                    }
-                  ]
-                },
-                premium: {
-                  anyOf: [
-                    { type: "number" },
-                    {
-                      type: "string",
-                      description: "Premium amount as number string"
-                    }
-                  ]
-                },
+                sum: { type: "number" },
+                premium: { type: "number" },
                 variant: { type: "string" }
               }
             }
@@ -380,15 +340,7 @@ serve(async (req) => {
               properties: {
                 name: { type: "string" },
                 coverage: { type: "string" },
-                premium: {
-                  anyOf: [
-                    { type: "number" },
-                    {
-                      type: "string",
-                      description: "Premium amount as number string"
-                    }
-                  ]
-                }
+                premium: { type: "number" }
               }
             }
           },
@@ -397,23 +349,11 @@ serve(async (req) => {
             items: { type: "string" }
           },
           total_premium_before_discounts: {
-            anyOf: [
-              { type: "number" },
-              {
-                type: "string",
-                description: "Total premium before discounts as number string"
-              }
-            ],
+            type: "number",
             description: "Total premium before any discounts"
           },
           total_premium_after_discounts: {
-            anyOf: [
-              { type: "number" },
-              {
-                type: "string",
-                description: "Total premium after discounts as number string"
-              }
-            ],
+            type: "number",
             description: "Final total premium after discounts"
           },
           assistance: {
