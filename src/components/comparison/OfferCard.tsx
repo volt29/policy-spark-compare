@@ -17,11 +17,28 @@ interface OfferCardProps {
 }
 
 export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCardProps) {
-  const premium = offer.data?.premium?.total;
+  // Support both old and new unified format
+  const unified = offer.data?.unified;
+  
+  const premium = unified?.total_premium_after_discounts !== 'missing' 
+    ? unified?.total_premium_after_discounts 
+    : offer.data?.premium?.total;
+    
   const currency = offer.data?.premium?.currency || 'PLN';
+  
   const ocSum = offer.data?.coverage?.oc?.sum;
-  const assistanceCount = offer.data?.assistance?.length || 0;
-  const period = offer.data?.period || '12m';
+  
+  const assistanceCount = unified?.assistance?.length || offer.data?.assistance?.length || 0;
+  
+  const period = unified?.duration?.variant 
+    ? `${unified.duration.variant} (${calculateMonths(unified.duration.start, unified.duration.end)}m)`
+    : offer.data?.period || '12m';
+  
+  // Show discount info if available
+  const hasDiscounts = unified?.discounts && unified.discounts.length > 0;
+  const premiumBefore = unified?.total_premium_before_discounts !== 'missing' 
+    ? unified?.total_premium_before_discounts 
+    : null;
 
   return (
     <Card 
@@ -70,6 +87,15 @@ export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCar
             {premium ? `${premium.toLocaleString('pl-PL')} ${currency}` : 'Brak danych'}
           </div>
           <div className="text-sm text-muted-foreground mt-1">składka miesięczna</div>
+          
+          {hasDiscounts && premiumBefore && premiumBefore > premium && (
+            <div className="text-xs text-muted-foreground mt-2">
+              <span className="line-through">{premiumBefore.toLocaleString('pl-PL')} {currency}</span>
+              <span className="text-success ml-2">
+                oszczędzasz {(premiumBefore - premium).toLocaleString('pl-PL')} {currency}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Key Parameters */}
@@ -117,4 +143,19 @@ export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCar
       </CardFooter>
     </Card>
   );
+}
+
+// Helper: Calculate months between two dates
+function calculateMonths(start: string, end: string): number {
+  if (start === 'missing' || end === 'missing') return 12;
+  
+  try {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    const months = (endDate.getFullYear() - startDate.getFullYear()) * 12 + 
+                   (endDate.getMonth() - startDate.getMonth());
+    return months || 12;
+  } catch {
+    return 12;
+  }
 }
