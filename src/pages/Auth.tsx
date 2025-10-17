@@ -16,6 +16,8 @@ import { useEffect } from "react";
 export default function Auth() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("login");
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
 
@@ -24,6 +26,15 @@ export default function Auth() {
       navigate("/dashboard");
     }
   }, [user, navigate]);
+
+  useEffect(() => {
+    // Check if this is a password reset callback
+    const hashParams = new URLSearchParams(window.location.hash.substring(1));
+    const type = hashParams.get('type');
+    if (type === 'recovery') {
+      setShowResetPassword(true);
+    }
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,6 +96,60 @@ export default function Auth() {
     }
   };
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    const form = e.target as HTMLFormElement;
+    const email = (form.elements.namedItem("reset-email") as HTMLInputElement).value;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth`,
+    });
+
+    if (error) {
+      toast.error("Błąd", { description: error.message });
+      setIsLoading(false);
+    } else {
+      toast.success("Link wysłany!", { 
+        description: "Sprawdź swoją skrzynkę email" 
+      });
+      setIsLoading(false);
+      setShowForgotPassword(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    const form = e.target as HTMLFormElement;
+    const password = (form.elements.namedItem("new-password") as HTMLInputElement).value;
+    const confirmPassword = (form.elements.namedItem("confirm-password") as HTMLInputElement).value;
+
+    if (password !== confirmPassword) {
+      toast.error("Hasła nie są identyczne");
+      setIsLoading(false);
+      return;
+    }
+
+    const { error } = await supabase.auth.updateUser({
+      password: password,
+    });
+
+    if (error) {
+      toast.error("Błąd", { description: error.message });
+      setIsLoading(false);
+    } else {
+      toast.success("Hasło zmienione!", { 
+        description: "Możesz się teraz zalogować" 
+      });
+      setIsLoading(false);
+      setShowResetPassword(false);
+      navigate("/dashboard");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-subtle flex flex-col">
       {/* Header */}
@@ -110,99 +175,167 @@ export default function Auth() {
             </div>
           </CardHeader>
           <CardContent>
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="login">Logowanie</TabsTrigger>
-                <TabsTrigger value="signup">Rejestracja</TabsTrigger>
-              </TabsList>
-
-              {/* Login Tab */}
-              <TabsContent value="login">
-                <form onSubmit={handleLogin} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="login-email">Email</Label>
-                    <Input
-                      id="login-email"
-                      type="email"
-                      placeholder="agent@example.com"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="login-password">Hasło</Label>
-                    <Input
-                      id="login-password"
-                      type="password"
-                      placeholder="••••••••"
-                      required
-                    />
-                  </div>
-                  <Button type="submit" className="w-full" disabled={isLoading}>
-                    {isLoading ? "Logowanie..." : "Zaloguj się"}
-                  </Button>
-                  <div className="text-center">
-                    <a href="#" className="text-sm text-muted-foreground hover:text-foreground">
-                      Zapomniałeś hasła?
-                    </a>
-                  </div>
-                </form>
-              </TabsContent>
-
-              {/* Signup Tab */}
-              <TabsContent value="signup">
-                <form onSubmit={handleSignup} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-name">Imię i nazwisko</Label>
-                    <Input
-                      id="signup-name"
-                      type="text"
-                      placeholder="Jan Kowalski"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-company">Nazwa firmy (opcjonalnie)</Label>
-                    <Input
-                      id="signup-company"
-                      type="text"
-                      placeholder="Moja Agencja Ubezpieczeniowa"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-email">Email</Label>
-                    <Input
-                      id="signup-email"
-                      type="email"
-                      placeholder="agent@example.com"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-password">Hasło</Label>
-                    <Input
-                      id="signup-password"
-                      type="password"
-                      placeholder="••••••••"
-                      required
-                      minLength={8}
-                    />
-                  </div>
-                  <Button type="submit" className="w-full" disabled={isLoading}>
-                    {isLoading ? "Tworzenie konta..." : "Utwórz konto"}
-                  </Button>
-                  <p className="text-xs text-center text-muted-foreground">
-                    Rejestrując się, akceptujesz nasz{" "}
-                    <a href="/terms" className="underline hover:text-foreground">
-                      Regulamin
-                    </a>{" "}
-                    i{" "}
-                    <a href="/privacy" className="underline hover:text-foreground">
-                      Politykę prywatności
-                    </a>
+            {showResetPassword ? (
+              <form onSubmit={handleResetPassword} className="space-y-4">
+                <div className="space-y-2">
+                  <h3 className="text-lg font-semibold">Ustaw nowe hasło</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Wprowadź nowe hasło do swojego konta
                   </p>
-                </form>
-              </TabsContent>
-            </Tabs>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="new-password">Nowe hasło</Label>
+                  <Input
+                    id="new-password"
+                    type="password"
+                    placeholder="••••••••"
+                    required
+                    minLength={8}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirm-password">Potwierdź hasło</Label>
+                  <Input
+                    id="confirm-password"
+                    type="password"
+                    placeholder="••••••••"
+                    required
+                    minLength={8}
+                  />
+                </div>
+                <Button type="submit" className="w-full" disabled={isLoading}>
+                  {isLoading ? "Zmiana hasła..." : "Zmień hasło"}
+                </Button>
+              </form>
+            ) : showForgotPassword ? (
+              <form onSubmit={handleForgotPassword} className="space-y-4">
+                <div className="space-y-2">
+                  <h3 className="text-lg font-semibold">Resetuj hasło</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Wyślemy Ci link do zresetowania hasła na email
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="reset-email">Email</Label>
+                  <Input
+                    id="reset-email"
+                    type="email"
+                    placeholder="agent@example.com"
+                    required
+                  />
+                </div>
+                <Button type="submit" className="w-full" disabled={isLoading}>
+                  {isLoading ? "Wysyłanie..." : "Wyślij link"}
+                </Button>
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotPassword(false)}
+                    className="text-sm text-muted-foreground hover:text-foreground"
+                  >
+                    Powrót do logowania
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="login">Logowanie</TabsTrigger>
+                  <TabsTrigger value="signup">Rejestracja</TabsTrigger>
+                </TabsList>
+
+                {/* Login Tab */}
+                <TabsContent value="login">
+                  <form onSubmit={handleLogin} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="login-email">Email</Label>
+                      <Input
+                        id="login-email"
+                        type="email"
+                        placeholder="agent@example.com"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="login-password">Hasło</Label>
+                      <Input
+                        id="login-password"
+                        type="password"
+                        placeholder="••••••••"
+                        required
+                      />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={isLoading}>
+                      {isLoading ? "Logowanie..." : "Zaloguj się"}
+                    </Button>
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => setShowForgotPassword(true)}
+                        className="text-sm text-muted-foreground hover:text-foreground"
+                      >
+                        Zapomniałeś hasła?
+                      </button>
+                    </div>
+                  </form>
+                </TabsContent>
+
+                {/* Signup Tab */}
+                <TabsContent value="signup">
+                  <form onSubmit={handleSignup} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="signup-name">Imię i nazwisko</Label>
+                      <Input
+                        id="signup-name"
+                        type="text"
+                        placeholder="Jan Kowalski"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="signup-company">Nazwa firmy (opcjonalnie)</Label>
+                      <Input
+                        id="signup-company"
+                        type="text"
+                        placeholder="Moja Agencja Ubezpieczeniowa"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="signup-email">Email</Label>
+                      <Input
+                        id="signup-email"
+                        type="email"
+                        placeholder="agent@example.com"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="signup-password">Hasło</Label>
+                      <Input
+                        id="signup-password"
+                        type="password"
+                        placeholder="••••••••"
+                        required
+                        minLength={8}
+                      />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={isLoading}>
+                      {isLoading ? "Tworzenie konta..." : "Utwórz konto"}
+                    </Button>
+                    <p className="text-xs text-center text-muted-foreground">
+                      Rejestrując się, akceptujesz nasz{" "}
+                      <a href="/terms" className="underline hover:text-foreground">
+                        Regulamin
+                      </a>{" "}
+                      i{" "}
+                      <a href="/privacy" className="underline hover:text-foreground">
+                        Politykę prywatności
+                      </a>
+                    </p>
+                  </form>
+                </TabsContent>
+              </Tabs>
+            )}
           </CardContent>
         </Card>
       </div>
