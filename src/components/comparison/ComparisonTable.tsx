@@ -186,10 +186,10 @@ export function ComparisonTable({ offers, bestOfferIndex }: ComparisonTableProps
                           )}>
                             {offer.data?.assistance && offer.data.assistance.length > 0 ? (
                               <ul className="space-y-1 text-sm">
-                                {offer.data.assistance.map((service: string, i: number) => (
+                                {offer.data.assistance.map((service: any, i: number) => (
                                   <li key={i} className="flex items-start gap-1">
                                     <span className="text-primary mt-0.5">•</span>
-                                    <span>{service}</span>
+                                    <span>{typeof service === 'string' ? service : service.name}</span>
                                   </li>
                                 ))}
                               </ul>
@@ -228,10 +228,10 @@ export function ComparisonTable({ offers, bestOfferIndex }: ComparisonTableProps
                           )}>
                             {offer.data?.exclusions && offer.data.exclusions.length > 0 ? (
                               <ul className="space-y-1 text-sm">
-                                {offer.data.exclusions.map((exclusion: string, i: number) => (
+                                {offer.data.exclusions.map((exclusion: any, i: number) => (
                                   <li key={i} className="flex items-start gap-1">
                                     <span className="text-destructive mt-0.5">•</span>
-                                    <span>{exclusion}</span>
+                                    <span>{typeof exclusion === 'string' ? exclusion : (exclusion.name || exclusion.coverage || 'Brak opisu')}</span>
                                   </li>
                                 ))}
                               </ul>

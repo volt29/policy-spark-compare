@@ -28,7 +28,8 @@ export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCar
   
   const ocSum = offer.data?.coverage?.oc?.sum;
   
-  const assistanceCount = unified?.assistance?.length || offer.data?.assistance?.length || 0;
+  const assistanceData = unified?.assistance || offer.data?.assistance;
+  const assistanceCount = Array.isArray(assistanceData) ? assistanceData.length : 0;
   
   const period = unified?.duration?.variant 
     ? `${unified.duration.variant} (${calculateMonths(unified.duration.start, unified.duration.end)}m)`
