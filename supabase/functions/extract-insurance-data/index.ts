@@ -53,6 +53,13 @@ serve(async (req) => {
     // Convert to base64 for AI processing using chunked processing
     const arrayBuffer = await fileData.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
+    
+    // Check file size before processing (20MB limit for base64)
+    const fileSizeMB = bytes.length / (1024 * 1024);
+    if (fileSizeMB > 20) {
+      throw new Error(`Plik jest za duży (${fileSizeMB.toFixed(1)}MB). Maksymalny rozmiar: 20MB. Spróbuj zmniejszyć rozdzielczość lub użyć kompresji.`);
+    }
+    
     let binary = '';
     const chunkSize = 8192; // Process 8KB at a time to avoid call stack limit
     
@@ -63,6 +70,8 @@ serve(async (req) => {
     
     const base64 = btoa(binary);
     const mimeType = document.mime_type || 'application/pdf';
+    
+    console.log(`File size: ${fileSizeMB.toFixed(2)}MB, Base64 length: ${base64.length}`);
 
     // Call Lovable AI to extract structured data with timeout
     const controller = new AbortController();
@@ -78,7 +87,7 @@ serve(async (req) => {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model: 'google/gemini-2.5-flash',
+          model: 'google/gemini-2.5-pro',
           messages: [
             {
               role: 'system',
@@ -125,6 +134,13 @@ serve(async (req) => {
 
     if (!aiResponse.ok) {
       const errorText = await aiResponse.text();
+      console.error('AI API error response:', errorText);
+      
+      // Parse specific errors
+      if (errorText.includes('Failed to extract') && errorText.includes('image')) {
+        throw new Error('Plik jest za duży lub w nieobsługiwanym formacie. Spróbuj zmniejszyć rozmiar pliku lub użyć niższej rozdzielczości.');
+      }
+      
       throw new Error(`AI API error: ${aiResponse.status} - ${errorText}`);
     }
 
