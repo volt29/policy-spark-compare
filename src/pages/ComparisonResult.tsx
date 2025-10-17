@@ -4,8 +4,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowLeft, Download, Loader2 } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ArrowLeft, Download, Loader2, Sparkles, BarChart3, ListChecks } from "lucide-react";
 import { toast } from "sonner";
+import { OfferCard } from "@/components/comparison/OfferCard";
+import { MetricsPanel } from "@/components/comparison/MetricsPanel";
+import { ComparisonTable } from "@/components/comparison/ComparisonTable";
+import { analyzeBestOffers, extractCalculationId } from "@/lib/comparison-utils";
 
 export default function ComparisonResult() {
   const { id } = useParams();
@@ -14,6 +19,7 @@ export default function ComparisonResult() {
   const [loading, setLoading] = useState(true);
   const [comparison, setComparison] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
+  const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -79,17 +85,29 @@ export default function ComparisonResult() {
 
   const compData = comparison.comparison_data;
   const offers = documents.map((doc, idx) => ({
-    id: idx + 1,
+    id: doc.id,
     insurer: doc.extracted_data?.insurer || `Oferta ${idx + 1}`,
     data: doc.extracted_data,
+    calculationId: extractCalculationId(doc.extracted_data),
   }));
+
+  const { badges, bestOfferIndex } = analyzeBestOffers(offers, compData);
+  const selectedOffer = offers.find(o => o.id === selectedOfferId);
+
+  const handleConfirmSelection = () => {
+    if (!selectedOffer) return;
+    localStorage.setItem(`comparison_${id}_selected`, selectedOfferId!);
+    toast.success("Oferta została zapisana!", {
+      description: `Wybrano: ${selectedOffer.insurer}`
+    });
+  };
 
   return (
     <div className="min-h-screen bg-gradient-subtle">
-      {/* Header */}
-      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      {/* Sticky Header */}
+      <div className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to="/dashboard" className="flex items-center space-x-2 text-sm text-muted-foreground hover:text-foreground">
+          <Link to="/dashboard" className="flex items-center space-x-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
             <ArrowLeft className="h-4 w-4" />
             <span>Powrót do panelu</span>
           </Link>
@@ -100,127 +118,134 @@ export default function ComparisonResult() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Main Content */}
       <div className="container mx-auto px-4 py-8 space-y-6">
-        {/* Summary Section */}
-        {comparison.summary_text && (
-          <Card className="shadow-elevated">
-            <CardHeader>
-              <CardTitle>Podsumowanie AI</CardTitle>
-              <CardDescription>Analiza przygotowana przez sztuczną inteligencję</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-foreground leading-relaxed">{comparison.summary_text}</p>
-            </CardContent>
-          </Card>
-        )}
+        {/* Metrics Panel */}
+        <MetricsPanel offers={offers} />
 
-        {/* Key Highlights */}
-        {compData.key_highlights && compData.key_highlights.length > 0 && (
-          <Card className="shadow-elevated">
-            <CardHeader>
-              <CardTitle>Najważniejsze różnice</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="space-y-2">
-                {compData.key_highlights.map((highlight: string, idx: number) => (
-                  <li key={idx} className="flex items-start space-x-2">
-                    <span className="text-primary mt-1">•</span>
-                    <span>{highlight}</span>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        )}
+        {/* Tabbed Interface */}
+        <Tabs defaultValue="overview" className="space-y-6">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="overview" className="gap-2">
+              <BarChart3 className="w-4 h-4" />
+              Przegląd ofert
+            </TabsTrigger>
+            <TabsTrigger value="details" className="gap-2">
+              <ListChecks className="w-4 h-4" />
+              Szczegółowe porównanie
+            </TabsTrigger>
+            <TabsTrigger value="ai" className="gap-2">
+              <Sparkles className="w-4 h-4" />
+              Analiza AI
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Comparison Table */}
-        <Card className="shadow-elevated">
-          <CardHeader>
-            <CardTitle>Szczegółowe porównanie</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left p-3 font-semibold">Kategoria</th>
-                    {offers.map((offer) => (
-                      <th key={offer.id} className="text-left p-3 font-semibold">
-                        {offer.insurer}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* Coverage */}
-                  <tr className="border-b">
-                    <td className="p-3 font-medium">Zakres OC</td>
-                    {offers.map((offer) => (
-                      <td key={offer.id} className="p-3">
-                        {offer.data?.coverage?.oc?.sum 
-                          ? `${offer.data.coverage.oc.sum.toLocaleString()} ${offer.data.coverage.oc.currency}`
-                          : "Brak danych"}
-                      </td>
-                    ))}
-                  </tr>
-                  <tr className="border-b">
-                    <td className="p-3 font-medium">Zakres AC</td>
-                    {offers.map((offer) => (
-                      <td key={offer.id} className="p-3">
-                        {offer.data?.coverage?.ac?.sum 
-                          ? `${offer.data.coverage.ac.sum.toLocaleString()} ${offer.data.coverage.ac.currency}`
-                          : "Brak danych"}
-                      </td>
-                    ))}
-                  </tr>
-                  {/* Premium */}
-                  <tr className="border-b bg-muted/50">
-                    <td className="p-3 font-medium">Składka</td>
-                    {offers.map((offer) => (
-                      <td key={offer.id} className="p-3 font-semibold">
-                        {offer.data?.premium?.total 
-                          ? `${offer.data.premium.total.toLocaleString()} ${offer.data.premium.currency}`
-                          : "Brak danych"}
-                      </td>
-                    ))}
-                  </tr>
-                  {/* Deductible */}
-                  <tr className="border-b">
-                    <td className="p-3 font-medium">Franszyza</td>
-                    {offers.map((offer) => (
-                      <td key={offer.id} className="p-3">
-                        {offer.data?.deductible?.amount 
-                          ? `${offer.data.deductible.amount} ${offer.data.deductible.currency}`
-                          : "Brak"}
-                      </td>
-                    ))}
-                  </tr>
-                </tbody>
-              </table>
+          {/* Tab 1: Offer Overview */}
+          <TabsContent value="overview" className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {offers.map((offer, idx) => (
+                <OfferCard
+                  key={offer.id}
+                  offer={offer}
+                  badges={badges.get(offer.id) || []}
+                  isSelected={selectedOfferId === offer.id}
+                  onSelect={() => setSelectedOfferId(offer.id === selectedOfferId ? null : offer.id)}
+                />
+              ))}
             </div>
-          </CardContent>
-        </Card>
+          </TabsContent>
 
-        {/* Recommendations */}
-        {compData.recommendations && compData.recommendations.length > 0 && (
-          <Card className="shadow-elevated">
-            <CardHeader>
-              <CardTitle>Zalecenia</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="space-y-2">
-                {compData.recommendations.map((rec: string, idx: number) => (
-                  <li key={idx} className="flex items-start space-x-2">
-                    <span className="text-primary mt-1">→</span>
-                    <span>{rec}</span>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        )}
+          {/* Tab 2: Detailed Comparison */}
+          <TabsContent value="details">
+            <ComparisonTable offers={offers} bestOfferIndex={bestOfferIndex} />
+          </TabsContent>
+
+          {/* Tab 3: AI Analysis */}
+          <TabsContent value="ai" className="space-y-6">
+            {/* AI Summary */}
+            {comparison.summary_text && (
+              <Card className="shadow-elevated">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-primary" />
+                    Podsumowanie AI
+                  </CardTitle>
+                  <CardDescription>Analiza przygotowana przez sztuczną inteligencję</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-foreground leading-relaxed whitespace-pre-line">{comparison.summary_text}</p>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Key Highlights */}
+            {compData.key_highlights && compData.key_highlights.length > 0 && (
+              <Card className="shadow-elevated">
+                <CardHeader>
+                  <CardTitle>Najważniejsze różnice</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ul className="space-y-3">
+                    {compData.key_highlights.map((highlight: string, idx: number) => (
+                      <li key={idx} className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50">
+                        <span className="text-primary mt-1 font-bold">•</span>
+                        <span className="flex-1">{highlight}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Recommendations */}
+            {compData.recommendations && compData.recommendations.length > 0 && (
+              <Card className="shadow-elevated border-primary/20">
+                <CardHeader>
+                  <CardTitle>Zalecenia</CardTitle>
+                  <CardDescription>Rekomendacje na podstawie analizy ofert</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ul className="space-y-3">
+                    {compData.recommendations.map((rec: string, idx: number) => (
+                      <li key={idx} className="flex items-start space-x-3 p-3 rounded-lg bg-primary/5">
+                        <span className="text-primary mt-1 font-bold">→</span>
+                        <span className="flex-1">{rec}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
+
+      {/* Sticky Offer Selector (Bottom) */}
+      {selectedOfferId && selectedOffer && (
+        <div className="fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur border-t shadow-elevated z-40 animate-fade-in">
+          <div className="container mx-auto px-4 py-4">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-lg truncate">
+                  Wybrana oferta: {selectedOffer.insurer}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {selectedOffer.calculationId && `ID kalkulacji: ${selectedOffer.calculationId}`}
+                  {selectedOffer.data?.premium?.total && ` • ${selectedOffer.data.premium.total.toLocaleString('pl-PL')} ${selectedOffer.data.premium.currency || 'PLN'}`}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setSelectedOfferId(null)}>
+                  Anuluj
+                </Button>
+                <Button onClick={handleConfirmSelection}>
+                  Potwierdź wybór
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
