@@ -16,11 +16,18 @@ import {
 export default function Compare() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [files, setFiles] = useState<File[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingStage, setProcessingStage] = useState<string>("");
   const [clientName, setClientName] = useState("");
   const [productType, setProductType] = useState("");
+
+  const {
+    files,
+    addFiles,
+    removeFile,
+    isProcessing,
+    processingMessage,
+    startComparison,
+    canSubmit,
+  } = useComparisonFlow({ userId: user?.id });
 
   useEffect(() => {
     if (!user) {
@@ -29,39 +36,20 @@ export default function Compare() {
   }, [user, navigate]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newFiles = Array.from(e.target.files || []);
-    
-    // Validation 1: Max 5 files
-    if (files.length + newFiles.length > 5) {
-      toast.error("Maksymalnie 5 plików");
-      return;
-    }
-    
-    // Validation 2: Max file size (10MB)
-    const oversized = newFiles.filter(f => f.size > 10 * 1024 * 1024);
-    if (oversized.length > 0) {
-      toast.error("Plik za duży", { 
-        description: `Maksymalny rozmiar: 10MB. Plik "${oversized[0].name}" jest za duży.` 
-      });
-      return;
-    }
-    
-    // Validation 3: Allowed file types
-    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-    const invalidTypes = newFiles.filter(f => !allowedTypes.includes(f.type));
-    if (invalidTypes.length > 0) {
-      toast.error("Nieprawidłowy format", { 
-        description: "Akceptowane formaty: PDF, JPG, PNG, WEBP" 
-      });
-      return;
-    }
-    
-    setFiles([...files, ...newFiles]);
-    toast.success(`Dodano ${newFiles.length} plik(ów)`);
-  };
+    const incoming = Array.from(e.target.files ?? []);
+    const result = addFiles(incoming);
 
-  const removeFile = (index: number) => {
-    setFiles(files.filter((_, i) => i !== index));
+    if (result.status === "success") {
+      if (result.added > 0) {
+        toast.success(`Dodano ${result.added} plik(ów)`);
+      }
+    } else {
+      toast.error(result.message, {
+        description: result.description,
+      });
+    }
+
+    e.target.value = "";
   };
 
   const stageMessages: Record<ComparisonStage, string> = {
@@ -76,12 +64,21 @@ export default function Compare() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (files.length < 2) {
-      toast.error("Dodaj minimum 2 oferty do porównania");
+
+    const result = await startComparison(productType || "OC/AC");
+
+    if (result.status === "success") {
+      toast.success("Porównanie gotowe!");
+      navigate(`/comparison/${result.comparisonId}`);
       return;
     }
 
-    if (!user) {
+    if (result.status === "validation-error") {
+      toast.error(result.message);
+      return;
+    }
+
+    if (result.status === "auth-required") {
       toast.error("Musisz być zalogowany");
       navigate("/auth");
       return;
@@ -121,7 +118,6 @@ export default function Compare() {
 
   return (
     <div className="min-h-screen bg-gradient-subtle">
-      {/* Header */}
       <header className="border-b border-border bg-background/95 backdrop-blur">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center space-x-4">
@@ -142,7 +138,6 @@ export default function Compare() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <form onSubmit={handleSubmit} className="space-y-8">
-            {/* Client Info */}
             <Card className="shadow-md">
               <CardHeader>
                 <CardTitle>Informacje o kliencie</CardTitle>
@@ -172,7 +167,6 @@ export default function Compare() {
               </CardContent>
             </Card>
 
-            {/* File Upload */}
             <Card className="shadow-md">
               <CardHeader>
                 <CardTitle>Prześlij oferty</CardTitle>
@@ -181,7 +175,6 @@ export default function Compare() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Upload Area */}
                 <div className="relative">
                   <Input
                     id="file-upload"
@@ -205,7 +198,6 @@ export default function Compare() {
                   </label>
                 </div>
 
-                {/* Uploaded Files */}
                 {files.length > 0 && (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-foreground">
@@ -213,7 +205,7 @@ export default function Compare() {
                     </p>
                     {files.map((file, index) => (
                       <div
-                        key={index}
+                        key={`${file.name}-${index}`}
                         className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30"
                       >
                         <div className="flex items-center space-x-3">
@@ -240,18 +232,17 @@ export default function Compare() {
               </CardContent>
             </Card>
 
-            {/* Actions */}
             <div className="flex justify-end space-x-4">
               <Link to="/dashboard">
                 <Button type="button" variant="outline">
                   Anuluj
                 </Button>
               </Link>
-              <Button type="submit" disabled={files.length < 2 || isProcessing} size="lg">
+              <Button type="submit" disabled={!canSubmit} size="lg">
                 {isProcessing ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    {processingStage || "Przetwarzanie..."}
+                    {processingMessage || "Przetwarzanie..."}
                   </>
                 ) : (
                   "Rozpocznij porównanie"
@@ -260,7 +251,6 @@ export default function Compare() {
             </div>
           </form>
 
-          {/* Info Box */}
           <Card className="mt-8 bg-primary/5 border-primary/20">
             <CardContent className="pt-6">
               <div className="flex items-start space-x-3">
