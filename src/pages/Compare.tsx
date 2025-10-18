@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
+import { useComparisonFlow } from "@/hooks/useComparisonFlow";
 import { toast } from "sonner";
 import {
   comparisonService,
