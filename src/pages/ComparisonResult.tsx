@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -10,15 +10,25 @@ import { toast } from "sonner";
 import { OfferCard } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
-import { analyzeBestOffers, extractCalculationId } from "@/lib/comparison-utils";
+import {
+  analyzeBestOffers,
+  extractCalculationId,
+  type ComparisonOffer,
+  type ExtractedOfferData,
+} from "@/lib/comparison-utils";
+import type { Database } from "@/integrations/supabase/types";
+import { toComparisonAnalysis } from "@/types/comparison";
+
+type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
+type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
 
 export default function ComparisonResult() {
   const { id } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [comparison, setComparison] = useState<any>(null);
-  const [documents, setDocuments] = useState<any[]>([]);
+  const [comparison, setComparison] = useState<ComparisonRow | null>(null);
+  const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -48,7 +58,7 @@ export default function ComparisonResult() {
       if (docsError) throw docsError;
 
       setComparison(compData);
-      setDocuments(docsData);
+      setDocuments(docsData ?? []);
     } catch (error: any) {
       toast.error("Błąd ładowania porównania", { description: error.message });
       navigate("/dashboard");
@@ -65,7 +75,12 @@ export default function ComparisonResult() {
     );
   }
 
-  if (!comparison || !comparison.comparison_data) {
+  const comparisonAnalysis = useMemo(
+    () => (comparison ? toComparisonAnalysis(comparison.comparison_data) : null),
+    [comparison]
+  );
+
+  if (!comparison || !comparisonAnalysis) {
     return (
       <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
         <Card className="max-w-md">
@@ -83,15 +98,24 @@ export default function ComparisonResult() {
     );
   }
 
-  const compData = comparison.comparison_data;
-  const offers = documents.map((doc, idx) => ({
-    id: doc.id,
-    insurer: doc.extracted_data?.insurer || `Oferta ${idx + 1}`,
-    data: doc.extracted_data,
-    calculationId: extractCalculationId(doc.extracted_data),
-  }));
+  const offers = useMemo<ComparisonOffer[]>(() => {
+    return documents.map((doc, idx) => {
+      const extracted = (doc.extracted_data ?? null) as ExtractedOfferData | null;
+      const insurerName =
+        typeof extracted?.insurer === "string" && extracted.insurer.trim().length > 0
+          ? extracted.insurer
+          : `Oferta ${idx + 1}`;
 
-  const { badges, bestOfferIndex } = analyzeBestOffers(offers, compData);
+      return {
+        id: doc.id,
+        insurer: insurerName,
+        data: extracted,
+        calculationId: extractCalculationId(extracted),
+      } satisfies ComparisonOffer;
+    });
+  }, [documents]);
+
+  const { badges, bestOfferIndex } = useMemo(() => analyzeBestOffers(offers, comparisonAnalysis), [offers, comparisonAnalysis]);
   const selectedOffer = offers.find(o => o.id === selectedOfferId);
 
   const handleConfirmSelection = () => {
@@ -179,14 +203,14 @@ export default function ComparisonResult() {
             )}
 
             {/* Key Highlights */}
-            {compData.key_highlights && compData.key_highlights.length > 0 && (
+            {comparisonAnalysis.key_highlights && comparisonAnalysis.key_highlights.length > 0 && (
               <Card className="shadow-elevated">
                 <CardHeader>
                   <CardTitle>Najważniejsze różnice</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
-                    {compData.key_highlights.map((highlight: string, idx: number) => (
+                    {comparisonAnalysis.key_highlights.map((highlight: string, idx: number) => (
                       <li key={idx} className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50">
                         <span className="text-primary mt-1 font-bold">•</span>
                         <span className="flex-1">{highlight}</span>
@@ -198,7 +222,7 @@ export default function ComparisonResult() {
             )}
 
             {/* Recommendations */}
-            {compData.recommendations && compData.recommendations.length > 0 && (
+            {comparisonAnalysis.recommendations && comparisonAnalysis.recommendations.length > 0 && (
               <Card className="shadow-elevated border-primary/20">
                 <CardHeader>
                   <CardTitle>Zalecenia</CardTitle>
@@ -206,7 +230,7 @@ export default function ComparisonResult() {
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
-                    {compData.recommendations.map((rec: string, idx: number) => (
+                    {comparisonAnalysis.recommendations.map((rec: string, idx: number) => (
                       <li key={idx} className="flex items-start space-x-3 p-3 rounded-lg bg-primary/5">
                         <span className="text-primary mt-1 font-bold">→</span>
                         <span className="flex-1">{rec}</span>
