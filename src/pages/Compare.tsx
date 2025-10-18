@@ -1,24 +1,29 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { ArrowLeft, Upload, X, FileText, Loader2 } from "lucide-react";
-import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
-import { sanitizeFileName } from "@/lib/sanitizeFileName";
+import { useComparisonFlow } from "@/hooks/useComparisonFlow";
 
 export default function Compare() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [files, setFiles] = useState<File[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingStage, setProcessingStage] = useState<string>("");
   const [clientName, setClientName] = useState("");
   const [productType, setProductType] = useState("");
+
+  const {
+    files,
+    addFiles,
+    removeFile,
+    isProcessing,
+    processingMessage,
+    startComparison,
+    canSubmit,
+  } = useComparisonFlow({ userId: user?.id });
 
   useEffect(() => {
     if (!user) {
@@ -27,195 +32,53 @@ export default function Compare() {
   }, [user, navigate]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newFiles = Array.from(e.target.files || []);
-    
-    // Validation 1: Max 5 files
-    if (files.length + newFiles.length > 5) {
-      toast.error("Maksymalnie 5 plików");
-      return;
-    }
-    
-    // Validation 2: Max file size (10MB)
-    const oversized = newFiles.filter(f => f.size > 10 * 1024 * 1024);
-    if (oversized.length > 0) {
-      toast.error("Plik za duży", { 
-        description: `Maksymalny rozmiar: 10MB. Plik "${oversized[0].name}" jest za duży.` 
-      });
-      return;
-    }
-    
-    // Validation 3: Allowed file types
-    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
-    const invalidTypes = newFiles.filter(f => !allowedTypes.includes(f.type));
-    if (invalidTypes.length > 0) {
-      toast.error("Nieprawidłowy format", { 
-        description: "Akceptowane formaty: PDF, JPG, PNG, WEBP" 
-      });
-      return;
-    }
-    
-    setFiles([...files, ...newFiles]);
-    toast.success(`Dodano ${newFiles.length} plik(ów)`);
-  };
+    const incoming = Array.from(e.target.files ?? []);
+    const result = addFiles(incoming);
 
-  const removeFile = (index: number) => {
-    setFiles(files.filter((_, i) => i !== index));
+    if (result.status === "success") {
+      if (result.added > 0) {
+        toast.success(`Dodano ${result.added} plik(ów)`);
+      }
+    } else {
+      toast.error(result.message, {
+        description: result.description,
+      });
+    }
+
+    e.target.value = "";
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (files.length < 2) {
-      toast.error("Dodaj minimum 2 oferty do porównania");
+
+    const result = await startComparison(productType || "OC/AC");
+
+    if (result.status === "success") {
+      toast.success("Porównanie gotowe!");
+      navigate(`/comparison/${result.comparisonId}`);
       return;
     }
 
-    if (!user) {
+    if (result.status === "validation-error") {
+      toast.error(result.message);
+      return;
+    }
+
+    if (result.status === "auth-required") {
       toast.error("Musisz być zalogowany");
       navigate("/auth");
       return;
     }
 
-    setIsProcessing(true);
-
-    try {
-      // 1. Upload files to Storage
-      setProcessingStage("Przesyłanie plików...");
-      const uploadPromises = files.map(async (file) => {
-        const safeName = sanitizeFileName(file.name);
-        const fileName = `${user.id}/${Date.now()}-${safeName}`;
-        const { data, error } = await supabase.storage
-          .from("insurance-documents")
-          .upload(fileName, file);
-
-        if (error) throw error;
-        return { path: data.path, file };
+    if (result.status === "error") {
+      toast.error("Błąd podczas przetwarzania", {
+        description: result.message,
       });
-
-      const uploadedFiles = await Promise.all(uploadPromises);
-      toast.success("Pliki przesłane pomyślnie");
-
-      // 2. Create document records
-      const documentPromises = uploadedFiles.map(async ({ path, file }) => {
-        const { data, error } = await supabase
-          .from("documents")
-          .insert({
-            user_id: user.id,
-            file_name: file.name,
-            file_path: path,
-            file_size: file.size,
-            mime_type: file.type,
-            status: "uploaded",
-          })
-          .select()
-          .single();
-
-        if (error) throw error;
-        return data;
-      });
-
-      const documents = await Promise.all(documentPromises);
-      const documentIds = documents.map((d) => d.id);
-
-      // 3. Extract data from each document
-      setProcessingStage("Ekstrahowanie danych z dokumentów...");
-      const extractionPromises = documents.map((doc) =>
-        supabase.functions.invoke("extract-insurance-data", {
-          body: { document_id: doc.id },
-        })
-      );
-
-      await Promise.all(extractionPromises);
-      
-      // 3.5. Wait for extraction to complete (polling)
-      setProcessingStage("Czekam na ekstrakcję danych...");
-      const maxAttempts = 30; // 30 * 2s = 60s timeout
-      let attempts = 0;
-      
-      while (attempts < maxAttempts) {
-        const { data: docs } = await supabase
-          .from('documents')
-          .select('id, status, extracted_data')
-          .in('id', documentIds);
-        
-        if (!docs) {
-          throw new Error('Nie można sprawdzić statusu dokumentów');
-        }
-        
-        const allCompleted = docs.every(d => d.status === 'completed');
-        const anyFailed = docs.some(d => d.status === 'failed');
-        
-        if (allCompleted) {
-          toast.success("Dane wyekstrahowane pomyślnie");
-          break;
-        }
-        
-        if (anyFailed) {
-          const failedDocs = docs.filter(d => d.status === 'failed');
-          throw new Error(`Nie udało się przetworzyć ${failedDocs.length} dokumentu(ów). Spróbuj ponownie z innymi plikami.`);
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s
-        attempts++;
-      }
-      
-      if (attempts >= maxAttempts) {
-        throw new Error('Przekroczono limit czasu przetwarzania dokumentów. Spróbuj ponownie z mniejszymi plikami.');
-      }
-
-      // 4. Create comparison
-      const { data: comparison, error: compError } = await supabase
-        .from("comparisons")
-        .insert({
-          user_id: user.id,
-          product_type: productType || "OC/AC",
-          document_ids: documentIds,
-          status: "processing",
-        })
-        .select()
-        .single();
-
-      if (compError) throw compError;
-
-      // 5. Compare offers
-      setProcessingStage("Porównywanie ofert...");
-      await supabase.functions.invoke("compare-offers", {
-        body: { comparison_id: comparison.id },
-      });
-
-      // 6. Generate summary
-      setProcessingStage("Generowanie podsumowania AI...");
-      await supabase.functions.invoke("generate-summary", {
-        body: { comparison_id: comparison.id },
-      });
-
-      toast.success("Porównanie gotowe!");
-      setProcessingStage("");
-      navigate(`/comparison/${comparison.id}`);
-    } catch (error: any) {
-      console.error("Error during comparison:", error);
-      
-      // Parse specific errors
-      let errorMessage = "Wystąpił błąd podczas przetwarzania";
-      
-      if (error.message?.includes("Invalid key")) {
-        errorMessage = "Błąd: Nazwa pliku zawiera niedozwolone znaki. Spróbuj zmienić nazwę pliku.";
-      } else if (error.message?.includes("storage")) {
-        errorMessage = "Błąd przesyłania pliku. Sprawdź czy plik nie jest za duży (max 10MB).";
-      } else if (error.message?.includes("functions")) {
-        errorMessage = "Błąd przetwarzania AI. Spróbuj ponownie za chwilę.";
-      }
-      
-      toast.error("Błąd podczas przetwarzania", { 
-        description: errorMessage
-      });
-      setIsProcessing(false);
-      setProcessingStage("");
     }
   };
 
   return (
     <div className="min-h-screen bg-gradient-subtle">
-      {/* Header */}
       <header className="border-b border-border bg-background/95 backdrop-blur">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center space-x-4">
@@ -236,7 +99,6 @@ export default function Compare() {
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
           <form onSubmit={handleSubmit} className="space-y-8">
-            {/* Client Info */}
             <Card className="shadow-md">
               <CardHeader>
                 <CardTitle>Informacje o kliencie</CardTitle>
@@ -266,7 +128,6 @@ export default function Compare() {
               </CardContent>
             </Card>
 
-            {/* File Upload */}
             <Card className="shadow-md">
               <CardHeader>
                 <CardTitle>Prześlij oferty</CardTitle>
@@ -275,7 +136,6 @@ export default function Compare() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Upload Area */}
                 <div className="relative">
                   <Input
                     id="file-upload"
@@ -299,7 +159,6 @@ export default function Compare() {
                   </label>
                 </div>
 
-                {/* Uploaded Files */}
                 {files.length > 0 && (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-foreground">
@@ -307,7 +166,7 @@ export default function Compare() {
                     </p>
                     {files.map((file, index) => (
                       <div
-                        key={index}
+                        key={`${file.name}-${index}`}
                         className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30"
                       >
                         <div className="flex items-center space-x-3">
@@ -334,18 +193,17 @@ export default function Compare() {
               </CardContent>
             </Card>
 
-            {/* Actions */}
             <div className="flex justify-end space-x-4">
               <Link to="/dashboard">
                 <Button type="button" variant="outline">
                   Anuluj
                 </Button>
               </Link>
-              <Button type="submit" disabled={files.length < 2 || isProcessing} size="lg">
+              <Button type="submit" disabled={!canSubmit} size="lg">
                 {isProcessing ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    {processingStage || "Przetwarzanie..."}
+                    {processingMessage || "Przetwarzanie..."}
                   </>
                 ) : (
                   "Rozpocznij porównanie"
@@ -354,7 +212,6 @@ export default function Compare() {
             </div>
           </form>
 
-          {/* Info Box */}
           <Card className="mt-8 bg-primary/5 border-primary/20">
             <CardContent className="pt-6">
               <div className="flex items-start space-x-3">
