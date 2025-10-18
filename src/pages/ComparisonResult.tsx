@@ -67,36 +67,10 @@ export default function ComparisonResult() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
   const comparisonAnalysis = useMemo(
     () => (comparison ? toComparisonAnalysis(comparison.comparison_data) : null),
     [comparison]
   );
-
-  if (!comparison || !comparisonAnalysis) {
-    return (
-      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>Brak danych</CardTitle>
-            <CardDescription>Porównanie nie jest jeszcze gotowe</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => navigate("/dashboard")}>
-              Wróć do panelu
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   const offers = useMemo<ComparisonOffer[]>(() => {
     return documents.map((doc, idx) => {
@@ -115,8 +89,38 @@ export default function ComparisonResult() {
     });
   }, [documents]);
 
-  const { badges, bestOfferIndex } = useMemo(() => analyzeBestOffers(offers, comparisonAnalysis), [offers, comparisonAnalysis]);
-  const selectedOffer = offers.find(o => o.id === selectedOfferId);
+  const { badges, bestOfferIndex } = useMemo(
+    () => analyzeBestOffers(offers, comparisonAnalysis),
+    [offers, comparisonAnalysis]
+  );
+
+  const selectedOffer = offers.find((o) => o.id === selectedOfferId);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!comparison || !comparisonAnalysis) {
+    return (
+      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle>Brak danych</CardTitle>
+            <CardDescription>Porównanie nie jest jeszcze gotowe</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => navigate("/dashboard")}>
+              Wróć do panelu
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const handleConfirmSelection = () => {
     if (!selectedOffer) return;
