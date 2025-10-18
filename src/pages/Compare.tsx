@@ -1,15 +1,17 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { ArrowLeft, Upload, X, FileText, Loader2 } from "lucide-react";
-import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
-import { sanitizeFileName } from "@/lib/sanitizeFileName";
+import {
+  comparisonService,
+  ComparisonServiceError,
+  type ComparisonStage,
+} from "@/services/comparison-service";
 
 export default function Compare() {
   const navigate = useNavigate();
@@ -62,6 +64,16 @@ export default function Compare() {
     setFiles(files.filter((_, i) => i !== index));
   };
 
+  const stageMessages: Record<ComparisonStage, string> = {
+    uploading_files: "Przesyłanie plików...",
+    creating_documents: "Zapisywanie dokumentów...",
+    triggering_extraction: "Ekstrahowanie danych z dokumentów...",
+    waiting_for_extraction: "Czekam na ekstrakcję danych...",
+    creating_comparison: "Tworzenie porównania...",
+    comparing_offers: "Porównywanie ofert...",
+    generating_summary: "Generowanie podsumowania AI...",
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (files.length < 2) {
@@ -78,136 +90,30 @@ export default function Compare() {
     setIsProcessing(true);
 
     try {
-      // 1. Upload files to Storage
-      setProcessingStage("Przesyłanie plików...");
-      const uploadPromises = files.map(async (file) => {
-        const safeName = sanitizeFileName(file.name);
-        const fileName = `${user.id}/${Date.now()}-${safeName}`;
-        const { data, error } = await supabase.storage
-          .from("insurance-documents")
-          .upload(fileName, file);
-
-        if (error) throw error;
-        return { path: data.path, file };
-      });
-
-      const uploadedFiles = await Promise.all(uploadPromises);
-      toast.success("Pliki przesłane pomyślnie");
-
-      // 2. Create document records
-      const documentPromises = uploadedFiles.map(async ({ path, file }) => {
-        const { data, error } = await supabase
-          .from("documents")
-          .insert({
-            user_id: user.id,
-            file_name: file.name,
-            file_path: path,
-            file_size: file.size,
-            mime_type: file.type,
-            status: "uploaded",
-          })
-          .select()
-          .single();
-
-        if (error) throw error;
-        return data;
-      });
-
-      const documents = await Promise.all(documentPromises);
-      const documentIds = documents.map((d) => d.id);
-
-      // 3. Extract data from each document
-      setProcessingStage("Ekstrahowanie danych z dokumentów...");
-      const extractionPromises = documents.map((doc) =>
-        supabase.functions.invoke("extract-insurance-data", {
-          body: { document_id: doc.id },
-        })
-      );
-
-      await Promise.all(extractionPromises);
-      
-      // 3.5. Wait for extraction to complete (polling)
-      setProcessingStage("Czekam na ekstrakcję danych...");
-      const maxAttempts = 30; // 30 * 2s = 60s timeout
-      let attempts = 0;
-      
-      while (attempts < maxAttempts) {
-        const { data: docs } = await supabase
-          .from('documents')
-          .select('id, status, extracted_data')
-          .in('id', documentIds);
-        
-        if (!docs) {
-          throw new Error('Nie można sprawdzić statusu dokumentów');
-        }
-        
-        const allCompleted = docs.every(d => d.status === 'completed');
-        const anyFailed = docs.some(d => d.status === 'failed');
-        
-        if (allCompleted) {
-          toast.success("Dane wyekstrahowane pomyślnie");
-          break;
-        }
-        
-        if (anyFailed) {
-          const failedDocs = docs.filter(d => d.status === 'failed');
-          throw new Error(`Nie udało się przetworzyć ${failedDocs.length} dokumentu(ów). Spróbuj ponownie z innymi plikami.`);
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s
-        attempts++;
-      }
-      
-      if (attempts >= maxAttempts) {
-        throw new Error('Przekroczono limit czasu przetwarzania dokumentów. Spróbuj ponownie z mniejszymi plikami.');
-      }
-
-      // 4. Create comparison
-      const { data: comparison, error: compError } = await supabase
-        .from("comparisons")
-        .insert({
-          user_id: user.id,
-          product_type: productType || "OC/AC",
-          document_ids: documentIds,
-          status: "processing",
-        })
-        .select()
-        .single();
-
-      if (compError) throw compError;
-
-      // 5. Compare offers
-      setProcessingStage("Porównywanie ofert...");
-      await supabase.functions.invoke("compare-offers", {
-        body: { comparison_id: comparison.id },
-      });
-
-      // 6. Generate summary
-      setProcessingStage("Generowanie podsumowania AI...");
-      await supabase.functions.invoke("generate-summary", {
-        body: { comparison_id: comparison.id },
+      const result = await comparisonService.runComparisonFlow({
+        userId: user.id,
+        files,
+        productType: productType || "OC/AC",
+        onStageChange: (stage) => setProcessingStage(stageMessages[stage]),
       });
 
       toast.success("Porównanie gotowe!");
-      setProcessingStage("");
-      navigate(`/comparison/${comparison.id}`);
-    } catch (error: any) {
+      navigate(`/comparison/${result.comparisonId}`);
+    } catch (error) {
       console.error("Error during comparison:", error);
-      
-      // Parse specific errors
-      let errorMessage = "Wystąpił błąd podczas przetwarzania";
-      
-      if (error.message?.includes("Invalid key")) {
-        errorMessage = "Błąd: Nazwa pliku zawiera niedozwolone znaki. Spróbuj zmienić nazwę pliku.";
-      } else if (error.message?.includes("storage")) {
-        errorMessage = "Błąd przesyłania pliku. Sprawdź czy plik nie jest za duży (max 10MB).";
-      } else if (error.message?.includes("functions")) {
-        errorMessage = "Błąd przetwarzania AI. Spróbuj ponownie za chwilę.";
+
+      let description = "Wystąpił błąd podczas przetwarzania";
+
+      if (error instanceof ComparisonServiceError) {
+        description = error.message;
+      } else if (error instanceof Error && error.message) {
+        description = error.message;
       }
-      
-      toast.error("Błąd podczas przetwarzania", { 
-        description: errorMessage
+
+      toast.error("Błąd podczas przetwarzania", {
+        description,
       });
+    } finally {
       setIsProcessing(false);
       setProcessingStage("");
     }
