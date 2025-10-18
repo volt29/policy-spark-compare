@@ -7,7 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
-import { useComparisonFlow } from "@/hooks/useComparisonFlow";
+import {
+  comparisonService,
+  ComparisonServiceError,
+  type ComparisonStage,
+} from "@/services/comparison-service";
 
 export default function Compare() {
   const navigate = useNavigate();
@@ -48,6 +52,16 @@ export default function Compare() {
     e.target.value = "";
   };
 
+  const stageMessages: Record<ComparisonStage, string> = {
+    uploading_files: "Przesyłanie plików...",
+    creating_documents: "Zapisywanie dokumentów...",
+    triggering_extraction: "Ekstrahowanie danych z dokumentów...",
+    waiting_for_extraction: "Czekam na ekstrakcję danych...",
+    creating_comparison: "Tworzenie porównania...",
+    comparing_offers: "Porównywanie ofert...",
+    generating_summary: "Generowanie podsumowania AI...",
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -70,10 +84,35 @@ export default function Compare() {
       return;
     }
 
-    if (result.status === "error") {
-      toast.error("Błąd podczas przetwarzania", {
-        description: result.message,
+    setIsProcessing(true);
+
+    try {
+      const result = await comparisonService.runComparisonFlow({
+        userId: user.id,
+        files,
+        productType: productType || "OC/AC",
+        onStageChange: (stage) => setProcessingStage(stageMessages[stage]),
       });
+
+      toast.success("Porównanie gotowe!");
+      navigate(`/comparison/${result.comparisonId}`);
+    } catch (error) {
+      console.error("Error during comparison:", error);
+
+      let description = "Wystąpił błąd podczas przetwarzania";
+
+      if (error instanceof ComparisonServiceError) {
+        description = error.message;
+      } else if (error instanceof Error && error.message) {
+        description = error.message;
+      }
+
+      toast.error("Błąd podczas przetwarzania", {
+        description,
+      });
+    } finally {
+      setIsProcessing(false);
+      setProcessingStage("");
     }
   };
 
