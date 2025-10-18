@@ -8,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
 import { useComparisonFlow } from "@/hooks/useComparisonFlow";
 import { toast } from "sonner";
-import { useComparisonFlow } from "@/hooks/useComparisonFlow";
 
 export default function Compare() {
   const navigate = useNavigate();
