@@ -4,6 +4,199 @@ import { parsePdfText, combinePagesText } from './pdf-parser.ts';
 import { segmentInsuranceSections, calculateExtractionConfidence } from './classifier.ts';
 import { buildUnifiedOffer } from './unified-builder.ts';
 
+type LovableContentBlock = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
+const LOVABLE_SYSTEM_PROMPT = `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych.
+Ekstrahuj informacje zgodnie z zunifikowanym schematem:
+- Priorytetowo używaj danych z tekstu dokumentu
+- Dla składek: szukaj "total_premium_before_discounts" i "total_premium_after_discounts"
+- Dla ubezpieczonych: szukaj imion, wieku i przypisanych planów
+- Dla assistance: wypisz pełne nazwy usług z limity
+- Dla zniżek: wymień wszystkie rabaty i promocje
+- Oznacz brakujące wartości jako null lub pomiń pole`;
+
+interface AiRetryDecision {
+  shouldRetry: boolean;
+  updatedContent?: LovableContentBlock[];
+}
+
+async function callLovableWithRetry(
+  lovableApiKey: string,
+  schemaParameters: any,
+  initialContent: LovableContentBlock[],
+  options: {
+    timeoutMs?: number;
+    maxRetries?: number;
+    onRetry?: (errorText: string, attempt: number) => Promise<AiRetryDecision> | AiRetryDecision;
+  } = {}
+) {
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 120000;
+  const maxRetries = options.maxRetries ?? 0;
+  const onRetry = options.onRetry;
+
+  let content = initialContent;
+  let attempt = 0;
+  let aiResponse: Response | undefined;
+
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  while (attempt <= maxRetries) {
+    try {
+      console.log(`✅ Lovable call attempt ${attempt + 1}/${maxRetries + 1}`);
+      aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${lovableApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: 'google/gemini-2.5-flash',
+          messages: [
+            {
+              role: 'system',
+              content: LOVABLE_SYSTEM_PROMPT
+            },
+            {
+              role: 'user',
+              content
+            }
+          ],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "extract_insurance_data",
+                description: "Extract structured data from insurance policy document in unified format",
+                parameters: schemaParameters
+              }
+            }
+          ],
+          tool_choice: {
+            type: 'function',
+            function: { name: 'extract_insurance_data' }
+          }
+        }),
+      });
+
+      console.log('✅ Lovable response status:', aiResponse.status);
+
+      if (aiResponse.ok) {
+        break;
+      }
+
+      const errorText = await aiResponse.text();
+      console.error(`❌ Lovable error (attempt ${attempt + 1}):`, errorText);
+
+      if (attempt < maxRetries && onRetry) {
+        const decision = await onRetry(errorText, attempt);
+        if (decision.shouldRetry) {
+          content = decision.updatedContent ?? content;
+          attempt++;
+          continue;
+        }
+      }
+
+      throw new Error(`AI API error: ${aiResponse.status} - ${errorText}`);
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        throw new Error('AI processing timeout - file may be too large or complex');
+      }
+      throw error;
+    }
+  }
+
+  clearTimeout(timeoutId);
+
+  if (!aiResponse || !aiResponse.ok) {
+    throw new Error('Failed after all retry attempts');
+  }
+
+  return aiResponse.json();
+}
+
+function parseAiExtractionResponse(aiData: any) {
+  let extractedData;
+  const message = aiData.choices?.[0]?.message;
+
+  if (!message) {
+    throw new Error('AI response missing message payload');
+  }
+
+  try {
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      const toolCall = message.tool_calls[0];
+      extractedData = JSON.parse(toolCall.function.arguments);
+      console.log('Structured data extracted via tool calling');
+    } else if (message.content) {
+      const extractedText = message.content;
+      const jsonMatch = extractedText.match(/```json\n?([\s\S]*?)\n?```/) ||
+                       extractedText.match(/```\n?([\s\S]*?)\n?```/);
+      const jsonText = jsonMatch ? jsonMatch[1] : extractedText;
+      extractedData = JSON.parse(jsonText.trim());
+      console.log('Data extracted from content (fallback)');
+    } else {
+      throw new Error('No tool call or content in AI response');
+    }
+  } catch (parseError) {
+    console.error('Failed to parse AI response:', parseError);
+    extractedData = {
+      error: 'Failed to extract structured data',
+      raw_response: message
+    };
+  }
+
+  return extractedData;
+}
+
+function mergeExtractedData(base: any, addition: any) {
+  if (!addition || typeof addition !== 'object') {
+    return base;
+  }
+
+  const result = { ...base };
+
+  for (const [key, value] of Object.entries(addition)) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    const existing = result[key];
+
+    if (Array.isArray(value)) {
+      const existingArray = Array.isArray(existing) ? existing : [];
+      const combined = [...existingArray];
+
+      for (const item of value) {
+        const serialized = typeof item === 'object' ? JSON.stringify(item) : item;
+        const alreadyExists = combined.some(existingItem => {
+          if (typeof existingItem === 'object') {
+            return JSON.stringify(existingItem) === serialized;
+          }
+          return existingItem === item;
+        });
+
+        if (!alreadyExists) {
+          combined.push(item);
+        }
+      }
+
+      result[key] = combined;
+    } else if (typeof value === 'object') {
+      result[key] = mergeExtractedData(
+        existing && typeof existing === 'object' ? existing : {},
+        value
+      );
+    } else if (existing === undefined || existing === null || existing === '' || existing === 'missing') {
+      result[key] = value;
+    }
+  }
+
+  return result;
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -190,8 +383,11 @@ serve(async (req) => {
       }
     }
     
-    // Prepare image content array for AI
-    let imageContent: Array<{ type: string; image_url?: { url: string }; text?: string }> = [];
+    // Prepare containers for AI payloads
+    let imageContent: LovableContentBlock[] = [];
+    let sections: ReturnType<typeof segmentInsuranceSections> = [];
+    let textConfidence: 'high' | 'medium' | 'low' = 'low';
+    let previewImage: string | null = null;
     
     // Handle PDFs - convert to JPG and use base64 directly
     if (mimeType === 'application/pdf') {
@@ -222,40 +418,28 @@ serve(async (req) => {
         throw new Error(`Converted images too large (${totalSizeMB.toFixed(1)}MB). Please use a smaller PDF or fewer pages.`);
       }
       
-      // Build content array - prefer text if available
-      if (useTextExtraction && parsedText) {
-        // Step 2: Classify sections from extracted text
-        console.log('🔍 Step 14a: Classifying document sections...');
-        const sections = segmentInsuranceSections(parsedPages);
-        const textConfidence = calculateExtractionConfidence(sections);
-        console.log(`📊 Section classification complete (confidence: ${textConfidence})`);
-        
-        imageContent = [
-          { type: 'text', text: `Ekstrahuj dane z dokumentu ubezpieczeniowego. Tekst z dokumentu:\n\n${parsedText.slice(0, 8000)}` },
-          { type: 'text', text: `\n\nSekcje zidentyfikowane: ${sections.map(s => s.type).join(', ')}` }
-        ];
-        
-        // Add first page image for visual confirmation
-        if (base64Pages.length > 0) {
-          imageContent.push({
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${base64Pages[0]}` }
-          });
+        // Build content array - prefer text if available
+        if (useTextExtraction && parsedText) {
+          console.log('🔍 Step 14a: Classifying document sections...');
+          sections = segmentInsuranceSections(parsedPages);
+          textConfidence = calculateExtractionConfidence(sections);
+          previewImage = base64Pages.length > 0 ? base64Pages[0] : null;
+          console.log(`📊 Section classification complete (confidence: ${textConfidence})`);
+          console.log(`✅ Step 14: Using segmented text extraction with ${sections.length} zidentyfikowanych sekcji`);
+        } else {
+          // Fallback to image-only approach
+          imageContent = [
+            { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
+            ...base64Pages.map(base64 => ({
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${base64}` }
+            }))
+          ];
+
+          previewImage = base64Pages.length > 0 ? base64Pages[0] : null;
+
+          console.log(`✅ Step 14: Prepared ${base64Pages.length} image(s) as base64 data URLs (text extraction failed)`);
         }
-        
-        console.log(`✅ Step 14: Using text extraction with ${sections.length} classified sections + 1 image`);
-      } else {
-        // Fallback to image-only approach
-        imageContent = [
-          { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
-          ...base64Pages.map(base64 => ({
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${base64}` }
-          }))
-        ];
-        
-        console.log(`✅ Step 14: Prepared ${base64Pages.length} image(s) as base64 data URLs (text extraction failed)`);
-      }
       
     } else if (['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
       console.log('✅ Step 11: Detected image format, using base64...');
@@ -271,7 +455,9 @@ serve(async (req) => {
         type: 'image_url',
         image_url: { url: `data:${mimeType};base64,${base64}` }
       });
-      
+
+      previewImage = base64;
+
       console.log('✅ Step 12: Image prepared as base64');
     } else {
       throw new Error(`Unsupported file type: ${mimeType}`);
@@ -423,7 +609,13 @@ serve(async (req) => {
               properties: {
                 name: { type: "string" },
                 coverage: { type: "string" },
-                limits: { type: "string" }
+                limits: { type: "string" },
+                response_time: { type: "string" },
+                contact: { type: "string" },
+                exclusions: {
+                  type: "array",
+                  items: { type: "string" }
+                }
               }
             }
           },
@@ -444,10 +636,25 @@ serve(async (req) => {
             type: "object",
             additionalProperties: true
           },
-          exclusions: {
-            type: "array",
-            items: { type: "string" }
-          },
+            exclusions: {
+              type: "array",
+              items: {
+                anyOf: [
+                  { type: "string" },
+                  {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      description: { type: "string" },
+                      keywords: {
+                        type: "array",
+                        items: { type: "string" }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
           deductible: {
             type: "object",
             properties: {
@@ -470,142 +677,91 @@ serve(async (req) => {
       }
     };
 
-    console.log('✅ Step 15: Calling Lovable AI Gateway...');
-    
-    // Call Lovable AI with retry logic
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+      console.log('✅ Step 15: Preparing Lovable AI Gateway payload...');
 
-    let aiResponse;
-    let retryCount = 0;
-    const maxRetries = 2;
-    
-    while (retryCount <= maxRetries) {
-      try {
-        console.log(`✅ Step 16.${retryCount + 1}: Sending AI request (attempt ${retryCount + 1}/${maxRetries + 1})...`);
-        aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${lovableApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            model: 'google/gemini-2.5-flash',
-            messages: [
-              {
-                role: 'system',
-                content: `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych. 
-Ekstrahuj informacje zgodnie z zunifikowanym schematem:
-- Priorytetowo używaj danych z tekstu dokumentu
-- Dla składek: szukaj "total_premium_before_discounts" i "total_premium_after_discounts"
-- Dla ubezpieczonych: szukaj imion, wieku i przypisanych planów
-- Dla assistance: wypisz pełne nazwy usług z limity
-- Dla zniżek: wymień wszystkie rabaty i promocje
-- Oznacz brakujące wartości jako null lub pomiń pole`
-              },
-              {
-                role: 'user',
-                content: imageContent
-              }
-            ],
-            tools: [
-              {
-                type: "function",
-                function: extractionSchema
-              }
-            ],
-            tool_choice: {
-              type: "function",
-              function: { name: "extract_insurance_data" }
+      let extractedData: any = {};
+
+      if (useTextExtraction && parsedPages.length > 0) {
+        console.log('✅ Step 16: Running segmented text extraction');
+        const pagesPerSegment = 3;
+        const segmentsCount = Math.ceil(parsedPages.length / pagesPerSegment);
+
+        for (let segmentIndex = 0; segmentIndex < segmentsCount; segmentIndex++) {
+          const start = segmentIndex * pagesPerSegment;
+          const end = Math.min(start + pagesPerSegment, parsedPages.length);
+          const segmentPages = parsedPages.slice(start, end);
+          const segmentText = segmentPages.join('\n\n');
+          const segmentSections = segmentInsuranceSections(segmentPages);
+          const segmentSummary = segmentSections
+            .map(section => `${section.type}(${Math.round(section.confidence * 100)}%)`)
+            .join(', ') || 'brak sekcji';
+
+          const segmentContent: LovableContentBlock[] = [
+            {
+              type: 'text',
+              text: `Segment ${segmentIndex + 1}/${segmentsCount}. Strony ${start + 1}-${end}. Tekst:\n\n${segmentText}`
+            },
+            {
+              type: 'text',
+              text: `Sekcje w segmencie: ${segmentSummary}`
             }
-          }),
-        });
-        
-        console.log('✅ Step 17: AI response received, status:', aiResponse.status);
-        
-        if (aiResponse.ok) {
-          console.log('✅ Step 18: AI request successful!');
-          break; // Success - exit retry loop
-        } else {
-          const errorText = await aiResponse.text();
-          console.error(`❌ AI API error (attempt ${retryCount + 1}):`, errorText);
-          
-          // Check if we should retry with degradation
-          if ((errorText.includes('Failed to extract') || errorText.includes('too large')) && retryCount < maxRetries) {
-            retryCount++;
-            console.log(`⚠️ Degrading: reducing to 1 page and retrying...`);
-            
-            // Degradation: use only page 1 with lower quality
-            if (mimeType === 'application/pdf') {
-              const { base64Pages } = await convertPdfToJpgs(bytes, 1); // Only page 1
-              
-              imageContent = [
-                { type: 'text', text: 'Ekstrahuj dane z pierwszej strony dokumentu:' },
-                { 
-                  type: 'image_url', 
-                  image_url: { url: `data:image/jpeg;base64,${base64Pages[0]}` } 
-                }
-              ];
-              console.log('✅ Degradation: using only 1 page as base64');
-            }
-          } else {
-            throw new Error(`AI API error: ${aiResponse.status} - ${errorText}`);
+          ];
+
+          if (segmentIndex === 0 && previewImage) {
+            segmentContent.push({
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${previewImage}` }
+            });
           }
-        }
-      } catch (error: any) {
-        clearTimeout(timeoutId);
-        if (error.name === 'AbortError') {
-          throw new Error('AI processing timeout - file may be too large or complex');
-        }
-        throw error;
-      }
-    }
-    
-    clearTimeout(timeoutId);
 
-    if (!aiResponse || !aiResponse.ok) {
-      throw new Error('Failed after all retry attempts');
-    }
+          console.log(`🚚 Segment ${segmentIndex + 1}/${segmentsCount} wysłany do AI (długość tekstu: ${segmentText.length})`);
 
-    const aiData = await aiResponse.json();
-    console.log('✅ Step 19: AI response parsed successfully');
-    
-    // Extract structured data from tool call
-    let extractedData;
-    try {
-      console.log('✅ Step 20: Extracting structured data from AI response...');
-      const message = aiData.choices[0].message;
-      
-      if (message.tool_calls && message.tool_calls.length > 0) {
-        const toolCall = message.tool_calls[0];
-        extractedData = JSON.parse(toolCall.function.arguments);
-        console.log('Structured data extracted via tool calling');
-      } else if (message.content) {
-        const extractedText = message.content;
-        const jsonMatch = extractedText.match(/```json\n?([\s\S]*?)\n?```/) || 
-                         extractedText.match(/```\n?([\s\S]*?)\n?```/);
-        const jsonText = jsonMatch ? jsonMatch[1] : extractedText;
-        extractedData = JSON.parse(jsonText.trim());
-        console.log('Data extracted from content (fallback)');
+          const aiSegmentData = await callLovableWithRetry(
+            lovableApiKey,
+            extractionSchema.parameters,
+            segmentContent,
+            {
+              maxRetries: 1,
+              timeoutMs: 120000
+            }
+          );
+
+          const parsedSegmentData = parseAiExtractionResponse(aiSegmentData);
+          extractedData = mergeExtractedData(extractedData, parsedSegmentData);
+        }
       } else {
-        throw new Error('No tool call or content in AI response');
-      }
-    } catch (parseError) {
-      console.error('Failed to parse AI response:', parseError);
-      extractedData = { 
-        error: 'Failed to extract structured data',
-        raw_response: aiData.choices[0].message 
-      };
-    }
+        console.log('✅ Step 16: Calling Lovable AI using image-based fallback');
+        const aiData = await callLovableWithRetry(
+          lovableApiKey,
+          extractionSchema.parameters,
+          imageContent,
+          {
+            maxRetries: 2,
+            timeoutMs: 120000,
+            onRetry: async (errorText) => {
+              if ((errorText.includes('Failed to extract') || errorText.includes('too large')) && mimeType === 'application/pdf') {
+                console.log('⚠️ Degrading: reducing to 1 page and retrying...');
+                const { base64Pages: degradedPages } = await convertPdfToJpgs(bytes, 1);
+                return {
+                  shouldRetry: true,
+                  updatedContent: [
+                    { type: 'text', text: 'Ekstrahuj dane z pierwszej strony dokumentu:' },
+                    { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${degradedPages[0]}` } }
+                  ]
+                };
+              }
 
-    console.log('✅ Step 21: Building unified offer structure...');
-    
-    // Step 3: Build unified offer structure
-    let unifiedOffer;
-    if (useTextExtraction && parsedPages.length > 0) {
-      const sections = segmentInsuranceSections(parsedPages);
-      unifiedOffer = buildUnifiedOffer(
+              return { shouldRetry: false };
+            }
+          }
+        );
+
+        extractedData = parseAiExtractionResponse(aiData);
+      }
+
+      console.log('✅ Step 20: Building unified offer structure...');
+
+      const unifiedOffer = buildUnifiedOffer(
         sections,
         {
           documentId: document_id,
@@ -614,31 +770,35 @@ Ekstrahuj informacje zgodnie z zunifikowanym schematem:
         },
         extractedData
       );
-    } else {
-      // Fallback: build from AI data only
-      unifiedOffer = buildUnifiedOffer(
-        [],
-        {
-          documentId: document_id,
-          fileName: document.file_name,
-          calculationId: extractedData?.calculation_id || extractedData?.calculationId
-        },
-        extractedData
-      );
-    }
-    
-    console.log('✅ Step 22: Unified offer structure complete');
-    console.log(`📊 Offer ID: ${unifiedOffer.offer_id}`);
-    console.log(`📊 Confidence: ${unifiedOffer.extraction_confidence}`);
-    console.log(`📊 Missing fields: ${unifiedOffer.missing_fields.length}`);
-    
-    // Merge unified structure with original extracted data for backward compatibility
-    const finalData = {
-      ...extractedData, // Keep original AI extraction
-      unified: unifiedOffer // Add unified structure
-    };
-    
-    console.log('✅ Step 23: Updating document with extracted data...');
+
+      console.log('✅ Step 21: Unified offer structure complete');
+      console.log(`📊 Offer ID: ${unifiedOffer.offer_id}`);
+      console.log(`📊 Confidence: ${unifiedOffer.extraction_confidence}`);
+      console.log(`📊 Missing fields: ${unifiedOffer.missing_fields.length}`);
+
+      const diagnostics = {
+        extraction_confidence: unifiedOffer.extraction_confidence,
+        missing_fields: unifiedOffer.missing_fields,
+        sections: sections.map((section, index) => ({
+          index,
+          type: section.type,
+          confidence: section.confidence,
+          keywords: section.keywords
+        })),
+        text_confidence: textConfidence,
+        segments_processed: useTextExtraction && parsedPages.length > 0
+          ? Math.ceil(parsedPages.length / 3)
+          : 1
+      };
+
+      // Merge unified structure with original extracted data for backward compatibility
+      const finalData = {
+        ...extractedData,
+        unified: unifiedOffer,
+        diagnostics
+      };
+
+      console.log('✅ Step 22: Updating document with extracted data...');
     
     // Update document with extracted data
     const { error: updateError } = await supabase
@@ -653,7 +813,7 @@ Ekstrahuj informacje zgodnie z zunifikowanym schematem:
       throw new Error(`Failed to update document: ${updateError.message}`);
     }
 
-    console.log('✅ Step 24: Document processed successfully:', document_id);
+    console.log('✅ Step 23: Document processed successfully:', document_id);
 
     // Note: No cleanup needed - we're using base64 directly, not storage
 

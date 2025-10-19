@@ -52,7 +52,8 @@ serve(async (req) => {
     const offersData = documentsWithData.map((doc, idx) => ({
       offer_id: idx + 1,
       insurer: doc.extracted_data.insurer,
-      data: doc.extracted_data
+      data: doc.extracted_data,
+      diagnostics: doc.extracted_data?.diagnostics || null
     }));
 
     // Call Lovable AI to compare offers

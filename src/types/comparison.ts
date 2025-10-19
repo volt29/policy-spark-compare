@@ -46,6 +46,7 @@ export interface ComparisonAnalysis extends Record<string, unknown> {
   price_comparison?: ComparisonAnalysisSection | null;
   coverage_comparison?: ComparisonAnalysisSection | null;
   assistance_comparison?: ComparisonAnalysisSection | null;
+  exclusions_diff?: ComparisonAnalysisSection | null;
   key_highlights?: string[] | null;
   recommendations?: string[] | null;
   summary?: ComparisonSummary | null;
@@ -212,6 +213,15 @@ export function toComparisonAnalysis(
     if (risks) {
       summary.risks = risks;
     }
+  const exclusionsSection = parseSection(asRecord.exclusions_diff);
+  if (exclusionsSection) {
+    analysis.exclusions_diff = exclusionsSection;
+  }
+
+  const keyHighlights = parseStringArray(asRecord.key_highlights);
+  if (keyHighlights) {
+    analysis.key_highlights = keyHighlights;
+  }
 
     const nextSteps = parseStringArray(record.next_steps);
     if (nextSteps) {
