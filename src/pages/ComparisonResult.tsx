@@ -5,21 +5,12 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  ArrowLeft,
-  ArrowRight,
-  Download,
-  Loader2,
-  Sparkles,
-  BarChart3,
-  ListChecks,
-  CheckCircle2,
-  AlertTriangle,
-} from "lucide-react";
+import { ArrowLeft, Download, Loader2, Sparkles, BarChart3, ListChecks } from "lucide-react";
 import { toast } from "sonner";
 import { OfferCard } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
+import { AiSummaryPanel } from "@/components/comparison/AiSummaryPanel";
 import {
   analyzeBestOffers,
   extractCalculationId,
@@ -102,6 +93,16 @@ export default function ComparisonResult() {
     });
   }, [documents]);
 
+  const labeledOffers = useMemo(
+    () =>
+      offers.map((offer) => ({
+        id: offer.id,
+        label: offer.insurer,
+        insurer: offer.insurer,
+      })),
+    [offers],
+  );
+
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis),
     [offers, comparisonAnalysis]
@@ -136,28 +137,10 @@ export default function ComparisonResult() {
   }
 
   const summaryData = comparisonAnalysis.summary ?? null;
-  const recommendedOffer = summaryData?.recommended_offer ?? null;
-  const keyNumbers = recommendedOffer?.key_numbers ?? [];
-  const recommendedOfferTitle = recommendedOffer?.name ?? recommendedOffer?.insurer ?? null;
-  const recommendedOfferInsurer =
-    recommendedOffer?.name &&
-    recommendedOffer?.insurer &&
-    recommendedOffer.insurer !== recommendedOffer.name
-      ? recommendedOffer.insurer
-      : null;
   const fallbackSummaryText =
     summaryData?.fallback_text ??
     summaryData?.raw_text ??
     (typeof comparison.summary_text === "string" ? comparison.summary_text : null);
-  const hasStructuredSummary =
-    !!summaryData &&
-    (Boolean(
-      recommendedOffer &&
-        (recommendedOfferTitle || recommendedOffer.summary || keyNumbers.length > 0)
-    ) ||
-      (summaryData.reasons?.length ?? 0) > 0 ||
-      (summaryData.risks?.length ?? 0) > 0 ||
-      (summaryData.next_steps?.length ?? 0) > 0);
 
   const handleConfirmSelection = () => {
     if (!selectedOffer) return;
@@ -231,140 +214,12 @@ export default function ComparisonResult() {
 
           {/* Tab 3: AI Analysis */}
           <TabsContent value="ai" className="space-y-6">
-            {/* AI Summary */}
-            {(hasStructuredSummary || fallbackSummaryText) && (
-              <Card className="shadow-elevated">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="w-5 h-5 text-primary" />
-                    Rekomendacja AI
-                  </CardTitle>
-                  <CardDescription>
-                    Najważniejsze wskazówki przygotowane na podstawie analizy ofert
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  {hasStructuredSummary && (
-                    <div className="space-y-6">
-                      {recommendedOffer && (
-                        <div className="rounded-xl border border-primary/20 bg-primary/5 p-5 shadow-sm">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                            Rekomendowana oferta
-                          </p>
-                          {recommendedOfferTitle && (
-                            <p className="mt-1 text-2xl font-semibold text-primary">
-                              {recommendedOfferTitle}
-                            </p>
-                          )}
-                          {recommendedOfferInsurer && (
-                            <p className="text-sm text-muted-foreground">
-                              Towarzystwo: {recommendedOfferInsurer}
-                            </p>
-                          )}
-                          {recommendedOffer.summary && (
-                            <p className="mt-4 text-sm leading-relaxed text-foreground/80">
-                              {recommendedOffer.summary}
-                            </p>
-                          )}
-                          {keyNumbers.length > 0 && (
-                            <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-                              {keyNumbers.map((metric, idx) => (
-                                <div
-                                  key={idx}
-                                  className="rounded-lg bg-background/80 px-3 py-2 shadow-sm"
-                                >
-                                  <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                    {metric.label}
-                                  </dt>
-                                  <dd className="text-lg font-semibold text-foreground">
-                                    {metric.value}
-                                  </dd>
-                                </div>
-                              ))}
-                            </dl>
-                          )}
-                        </div>
-                      )}
-
-                      {summaryData?.reasons && summaryData.reasons.length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                            Dlaczego to dobra opcja
-                          </h3>
-                          <ul className="mt-3 space-y-2">
-                            {summaryData.reasons.map((reason, idx) => (
-                              <li
-                                key={idx}
-                                className="flex items-start gap-2 rounded-lg bg-muted/40 p-3"
-                              >
-                                <CheckCircle2 className="mt-1 h-4 w-4 text-emerald-500" />
-                                <span className="text-sm leading-relaxed text-foreground">
-                                  {reason}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {summaryData?.risks && summaryData.risks.length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                            Na co uważać
-                          </h3>
-                          <ul className="mt-3 space-y-2">
-                            {summaryData.risks.map((risk, idx) => (
-                              <li
-                                key={idx}
-                                className="flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3"
-                              >
-                                <AlertTriangle className="mt-1 h-4 w-4 text-destructive" />
-                                <span className="text-sm leading-relaxed text-foreground">
-                                  {risk}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {summaryData?.next_steps && summaryData.next_steps.length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                            Kolejne kroki
-                          </h3>
-                          <ul className="mt-3 space-y-2">
-                            {summaryData.next_steps.map((step, idx) => (
-                              <li
-                                key={idx}
-                                className="flex items-start gap-2 rounded-lg bg-primary/5 p-3"
-                              >
-                                <ArrowRight className="mt-1 h-4 w-4 text-primary" />
-                                <span className="text-sm leading-relaxed text-foreground">
-                                  {step}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {!hasStructuredSummary && fallbackSummaryText && (
-                    <p className="text-foreground leading-relaxed whitespace-pre-line">
-                      {fallbackSummaryText}
-                    </p>
-                  )}
-
-                  {hasStructuredSummary && fallbackSummaryText && (
-                    <div className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground whitespace-pre-line">
-                      {fallbackSummaryText}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+            <AiSummaryPanel
+              summaryData={summaryData}
+              fallbackSummaryText={fallbackSummaryText}
+              offers={labeledOffers}
+              sourcesMap={summaryData?.sources_map ?? null}
+            />
 
             {/* Key Highlights */}
             {comparisonAnalysis.key_highlights && comparisonAnalysis.key_highlights.length > 0 && (
