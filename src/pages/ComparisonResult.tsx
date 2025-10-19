@@ -15,22 +15,39 @@ import {
   ListChecks,
   CheckCircle2,
   AlertTriangle,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { OfferCard } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
+import { SectionComparisonView } from "@/components/comparison/SectionComparisonView";
+import { SourceTooltip } from "@/components/comparison/SourceTooltip";
 import {
   analyzeBestOffers,
   extractCalculationId,
+  createAnalysisLookup,
+  findOfferAnalysis,
+  getPremium,
   type ComparisonOffer,
   type ExtractedOfferData,
 } from "@/lib/comparison-utils";
 import type { Database } from "@/integrations/supabase/types";
-import { toComparisonAnalysis } from "@/types/comparison";
+import { toComparisonAnalysis, type SourceReference } from "@/types/comparison";
 
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
+
+const toNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
 
 export default function ComparisonResult() {
   const { id } = useParams();
@@ -106,6 +123,83 @@ export default function ComparisonResult() {
     () => analyzeBestOffers(offers, comparisonAnalysis),
     [offers, comparisonAnalysis]
   );
+
+  const priceAnalyses = useMemo(() => {
+    const lookup = createAnalysisLookup(comparisonAnalysis?.price_comparison);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [comparisonAnalysis?.price_comparison, offers]);
+
+  const coverageAnalyses = useMemo(() => {
+    const lookup = createAnalysisLookup(comparisonAnalysis?.coverage_comparison);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [comparisonAnalysis?.coverage_comparison, offers]);
+
+  const assistanceAnalyses = useMemo(() => {
+    const lookup = createAnalysisLookup(comparisonAnalysis?.assistance_comparison);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [comparisonAnalysis?.assistance_comparison, offers]);
+
+  const exclusionsAnalyses = useMemo(() => {
+    const lookup = createAnalysisLookup(comparisonAnalysis?.exclusions_diff);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [comparisonAnalysis?.exclusions_diff, offers]);
+
+  const offerAnalyses = useMemo(
+    () =>
+      offers.map((_, idx) => ({
+        price: priceAnalyses[idx],
+        coverage: coverageAnalyses[idx],
+        assistance: assistanceAnalyses[idx],
+        exclusions: exclusionsAnalyses[idx],
+      })),
+    [offers, priceAnalyses, coverageAnalyses, assistanceAnalyses, exclusionsAnalyses],
+  );
+
+  const premiumNumbers = useMemo(() => offers.map((offer) => getPremium(offer.data)), [offers]);
+
+  const lowestPremiumIndex = useMemo(() => {
+    let index = -1;
+    premiumNumbers.forEach((value, idx) => {
+      if (value !== null && (index === -1 || (premiumNumbers[index] ?? Infinity) > value)) {
+        index = idx;
+      }
+    });
+    return index;
+  }, [premiumNumbers]);
+
+  const coverageNumbers = useMemo(
+    () => offers.map((offer) => toNumber(offer.data?.coverage?.oc?.sum)),
+    [offers],
+  );
+
+  const highestCoverageIndex = useMemo(() => {
+    let index = -1;
+    coverageNumbers.forEach((value, idx) => {
+      if (value !== null && (index === -1 || (coverageNumbers[index] ?? -Infinity) < value)) {
+        index = idx;
+      }
+    });
+    return index;
+  }, [coverageNumbers]);
+
+  const metricsSourceReferences = useMemo(() => {
+    const references: Partial<
+      Record<
+        "offerCount" | "lowestPremium" | "highestCoverage" | "averagePremium",
+        SourceReference | SourceReference[] | null
+      >
+    > = {};
+
+    if (lowestPremiumIndex !== -1) {
+      references.lowestPremium = priceAnalyses[lowestPremiumIndex]?.sources ?? null;
+    }
+
+    if (highestCoverageIndex !== -1) {
+      references.highestCoverage = coverageAnalyses[highestCoverageIndex]?.sources ?? null;
+    }
+
+    return references;
+  }, [lowestPremiumIndex, priceAnalyses, highestCoverageIndex, coverageAnalyses]);
 
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
 
@@ -186,11 +280,11 @@ export default function ComparisonResult() {
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8 space-y-6">
         {/* Metrics Panel */}
-        <MetricsPanel offers={offers} />
+        <MetricsPanel offers={offers} sourceReferences={metricsSourceReferences} />
 
         {/* Tabbed Interface */}
         <Tabs defaultValue="overview" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="overview" className="gap-2">
               <BarChart3 className="w-4 h-4" />
               Przegląd ofert
@@ -198,6 +292,10 @@ export default function ComparisonResult() {
             <TabsTrigger value="details" className="gap-2">
               <ListChecks className="w-4 h-4" />
               Szczegółowe porównanie
+            </TabsTrigger>
+            <TabsTrigger value="sections" className="gap-2">
+              <Layers className="w-4 h-4" />
+              Sekcje AI
             </TabsTrigger>
             <TabsTrigger value="ai" className="gap-2">
               <Sparkles className="w-4 h-4" />
@@ -214,6 +312,7 @@ export default function ComparisonResult() {
                   offer={offer}
                   badges={badges.get(offer.id) || []}
                   isSelected={selectedOfferId === offer.id}
+                  analysis={offerAnalyses[idx]}
                   onSelect={() => setSelectedOfferId(offer.id === selectedOfferId ? null : offer.id)}
                 />
               ))}
@@ -226,6 +325,20 @@ export default function ComparisonResult() {
               offers={offers}
               bestOfferIndex={bestOfferIndex}
               comparisonAnalysis={comparisonAnalysis}
+              priceAnalyses={priceAnalyses}
+              coverageAnalyses={coverageAnalyses}
+              assistanceAnalyses={assistanceAnalyses}
+              exclusionsAnalyses={exclusionsAnalyses}
+            />
+          </TabsContent>
+
+          <TabsContent value="sections">
+            <SectionComparisonView
+              offers={offers}
+              priceAnalyses={priceAnalyses}
+              coverageAnalyses={coverageAnalyses}
+              assistanceAnalyses={assistanceAnalyses}
+              exclusionsAnalyses={exclusionsAnalyses}
             />
           </TabsContent>
 
@@ -276,9 +389,11 @@ export default function ComparisonResult() {
                                   <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                                     {metric.label}
                                   </dt>
-                                  <dd className="text-lg font-semibold text-foreground">
-                                    {metric.value}
-                                  </dd>
+                                  <SourceTooltip reference={metric.sources}>
+                                    <dd className="text-lg font-semibold text-foreground">
+                                      {metric.value}
+                                    </dd>
+                                  </SourceTooltip>
                                 </div>
                               ))}
                             </dl>

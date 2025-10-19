@@ -1,4 +1,8 @@
-import type { ComparisonAnalysis, ComparisonAnalysisOffer } from "@/types/comparison";
+import type {
+  ComparisonAnalysis,
+  ComparisonAnalysisOffer,
+  ComparisonAnalysisSection,
+} from "@/types/comparison";
 
 export interface ExtractedOfferData {
   insurer?: string | null;
@@ -86,6 +90,46 @@ const toNumber = (value: unknown): number | null => {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+};
+
+export const createAnalysisLookup = (
+  section?: ComparisonAnalysisSection | null,
+): Map<string, ComparisonAnalysisOffer> => {
+  const map = new Map<string, ComparisonAnalysisOffer>();
+  const offers = section?.offers ?? [];
+
+  offers.forEach((analysisOffer, idx) => {
+    const keys = [
+      normalizeKey(analysisOffer.offer_id),
+      normalizeKey(analysisOffer.calculation_id),
+      indexKey(idx),
+    ].filter((key): key is string => Boolean(key));
+
+    keys.forEach((key) => map.set(key, analysisOffer));
+  });
+
+  return map;
+};
+
+export const findOfferAnalysis = (
+  lookup: Map<string, ComparisonAnalysisOffer>,
+  offer: ComparisonOffer,
+  index: number,
+): ComparisonAnalysisOffer | undefined => {
+  const keys = [
+    normalizeKey(offer.calculationId),
+    normalizeKey(offer.id),
+    indexKey(index),
+  ].filter((key): key is string => Boolean(key));
+
+  for (const key of keys) {
+    const match = lookup.get(key);
+    if (match) {
+      return match;
+    }
+  }
+
+  return undefined;
 };
 
 export function analyzeBestOffers(

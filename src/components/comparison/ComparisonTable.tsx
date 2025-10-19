@@ -14,12 +14,13 @@ import {
   Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getPremium, type ComparisonOffer } from "@/lib/comparison-utils";
-import type {
-  ComparisonAnalysis,
-  ComparisonAnalysisOffer,
-  ComparisonAnalysisSection,
-} from "@/types/comparison";
+import {
+  createAnalysisLookup,
+  findOfferAnalysis,
+  getPremium,
+  type ComparisonOffer,
+} from "@/lib/comparison-utils";
+import type { ComparisonAnalysis, ComparisonAnalysisOffer } from "@/types/comparison";
 
 type HighlightTone = "best" | "warning" | "neutral" | undefined;
 
@@ -36,16 +37,6 @@ const HIGHLIGHT_NOTE_CLASSES: Record<Exclude<HighlightTone, "neutral" | undefine
 const HIGHLIGHT_BADGE_CLASSES: Record<Exclude<HighlightTone, "neutral" | undefined>, string> = {
   best: "bg-emerald-500/15 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200",
   warning: "bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200",
-};
-
-const normalizeKey = (value: unknown): string | null => {
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value.toString();
-  }
-  return null;
 };
 
 const toNumber = (value: unknown): number | null => {
@@ -142,43 +133,6 @@ const getAiMessages = (analysis?: ComparisonAnalysisOffer): string[] => {
   return messages;
 };
 
-const createAnalysisLookup = (
-  section?: ComparisonAnalysisSection | null,
-): Map<string, ComparisonAnalysisOffer> => {
-  const map = new Map<string, ComparisonAnalysisOffer>();
-  const offers = section?.offers ?? [];
-  offers.forEach((analysisOffer, idx) => {
-    const keys = [
-      normalizeKey(analysisOffer.offer_id),
-      normalizeKey(analysisOffer.calculation_id),
-      `index:${idx}`,
-    ].filter((key): key is string => Boolean(key));
-
-    keys.forEach((key) => map.set(key, analysisOffer));
-  });
-  return map;
-};
-
-const getOfferAnalysis = (
-  lookup: Map<string, ComparisonAnalysisOffer>,
-  offer: ComparisonOffer,
-  index: number,
-): ComparisonAnalysisOffer | undefined => {
-  const keys = [
-    normalizeKey(offer.calculationId),
-    normalizeKey(offer.id),
-    `index:${index}`,
-  ].filter((key): key is string => Boolean(key));
-
-  for (const key of keys) {
-    const match = lookup.get(key);
-    if (match) {
-      return match;
-    }
-  }
-  return undefined;
-};
-
 const getPriceMetrics = (analysis?: ComparisonAnalysisOffer) => {
   if (!analysis) {
     return { delta: null as number | null, percent: null as number | null };
@@ -241,48 +195,55 @@ interface ComparisonTableProps {
   offers: ComparisonOffer[];
   bestOfferIndex?: number;
   comparisonAnalysis: ComparisonAnalysis | null;
+  priceAnalyses?: Array<ComparisonAnalysisOffer | undefined>;
+  coverageAnalyses?: Array<ComparisonAnalysisOffer | undefined>;
+  assistanceAnalyses?: Array<ComparisonAnalysisOffer | undefined>;
+  exclusionsAnalyses?: Array<ComparisonAnalysisOffer | undefined>;
 }
 
-export function ComparisonTable({ offers, bestOfferIndex, comparisonAnalysis }: ComparisonTableProps) {
+export function ComparisonTable({
+  offers,
+  bestOfferIndex,
+  comparisonAnalysis,
+  priceAnalyses: externalPriceAnalyses,
+  coverageAnalyses: externalCoverageAnalyses,
+  assistanceAnalyses: externalAssistanceAnalyses,
+  exclusionsAnalyses: externalExclusionsAnalyses,
+}: ComparisonTableProps) {
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
 
   const toggleRow = (rowId: string) => {
     setExpandedRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
   };
 
-  const priceLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.price_comparison),
-    [comparisonAnalysis],
-  );
-  const coverageLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.coverage_comparison),
-    [comparisonAnalysis],
-  );
-  const assistanceLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.assistance_comparison),
-    [comparisonAnalysis],
-  );
-  const exclusionsLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.exclusions_diff),
-    [comparisonAnalysis],
-  );
-
-  const priceAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(priceLookup, offer, idx)),
-    [offers, priceLookup],
-  );
-  const coverageAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(coverageLookup, offer, idx)),
-    [offers, coverageLookup],
-  );
-  const assistanceAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(assistanceLookup, offer, idx)),
-    [offers, assistanceLookup],
-  );
-  const exclusionsAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(exclusionsLookup, offer, idx)),
-    [offers, exclusionsLookup],
-  );
+  const priceAnalyses = useMemo(() => {
+    if (externalPriceAnalyses) {
+      return externalPriceAnalyses;
+    }
+    const lookup = createAnalysisLookup(comparisonAnalysis?.price_comparison);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [externalPriceAnalyses, comparisonAnalysis?.price_comparison, offers]);
+  const coverageAnalyses = useMemo(() => {
+    if (externalCoverageAnalyses) {
+      return externalCoverageAnalyses;
+    }
+    const lookup = createAnalysisLookup(comparisonAnalysis?.coverage_comparison);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [externalCoverageAnalyses, comparisonAnalysis?.coverage_comparison, offers]);
+  const assistanceAnalyses = useMemo(() => {
+    if (externalAssistanceAnalyses) {
+      return externalAssistanceAnalyses;
+    }
+    const lookup = createAnalysisLookup(comparisonAnalysis?.assistance_comparison);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [externalAssistanceAnalyses, comparisonAnalysis?.assistance_comparison, offers]);
+  const exclusionsAnalyses = useMemo(() => {
+    if (externalExclusionsAnalyses) {
+      return externalExclusionsAnalyses;
+    }
+    const lookup = createAnalysisLookup(comparisonAnalysis?.exclusions_diff);
+    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
+  }, [externalExclusionsAnalyses, comparisonAnalysis?.exclusions_diff, offers]);
 
   const premiums = useMemo(
     () => offers.map((offer) => getPremium(offer.data)),
