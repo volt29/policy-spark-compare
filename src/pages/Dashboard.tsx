@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, FileText, Users, TrendingUp, LogOut, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 
@@ -11,23 +12,22 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [comparisons, setComparisons] = useState<any[]>([]);
+  const [comparisons, setComparisons] = useState<
+    Database["public"]["Tables"]["comparisons"]["Row"][]
+  >([]);
   const [stats, setStats] = useState({
     thisMonth: 0,
     total: 0,
     clients: 0,
   });
 
-  useEffect(() => {
-    if (!user) {
-      navigate("/auth");
+  const loadDashboardData = useCallback(async () => {
+    if (!user?.id) {
       return;
     }
 
-    loadDashboardData();
-  }, [user, navigate]);
+    setLoading(true);
 
-  const loadDashboardData = async () => {
     try {
       const { data: compData, error: compError } = await supabase
         .from("comparisons")
@@ -57,12 +57,22 @@ export default function Dashboard() {
         total: compData?.length || 0,
         clients: clientsCount || 0,
       });
-    } catch (error: any) {
-      toast.error("Błąd ładowania danych", { description: error.message });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Nieznany błąd";
+      toast.error("Błąd ładowania danych", { description: message });
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/auth");
+      return;
+    }
+
+    loadDashboardData();
+  }, [user, navigate, loadDashboardData]);
 
   if (loading) {
     return (
