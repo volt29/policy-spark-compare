@@ -6,6 +6,110 @@ import { buildUnifiedOffer } from './unified-builder.ts';
 
 type LovableContentBlock = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
+const IMAGE_PAYLOAD_TARGET_BYTES = 4 * 1024 * 1024; // 4 MB safety window before hard 6 MB limit
+
+function uint8ArrayToBase64(bytes: Uint8Array, chunkSize = 0x8000): string {
+  if (bytes.length === 0) {
+    return '';
+  }
+
+  const decoder = new TextDecoder('iso-8859-1');
+  let binary = '';
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += decoder.decode(chunk);
+  }
+
+  return btoa(binary);
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
+}
+
+async function shrinkImageIfNeeded(
+  bytes: Uint8Array,
+  mimeType: string,
+  maxBytes: number = IMAGE_PAYLOAD_TARGET_BYTES
+): Promise<{ bytes: Uint8Array; mimeType: string; warning?: string }> {
+  if (bytes.length <= maxBytes) {
+    return { bytes, mimeType };
+  }
+
+  const convertApiSecret = Deno.env.get('CONVERTAPI_SECRET');
+  console.warn(
+    `⚠️ Image payload ${(bytes.length / (1024 * 1024)).toFixed(2)}MB exceeds ${(maxBytes / (1024 * 1024)).toFixed(2)}MB target. Attempting compression.`
+  );
+
+  if (!convertApiSecret) {
+    console.warn('⚠️ Cannot shrink image - CONVERTAPI_SECRET missing.');
+    return {
+      bytes,
+      mimeType,
+      warning: 'Image exceeds recommended size and compression was skipped due to missing CONVERTAPI_SECRET.'
+    };
+  }
+
+  const extension = mimeType.split('/')[1] || 'image';
+  const formData = new FormData();
+  const blob = new Blob([bytes], { type: mimeType });
+  formData.append('File', blob, `image.${extension}`);
+  formData.append('ImageResolution', '150');
+  formData.append('JpgQuality', '70');
+
+  const response = await fetch(
+    `https://v2.convertapi.com/convert/${extension}/to/jpg?Secret=${convertApiSecret}`,
+    {
+      method: 'POST',
+      body: formData
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('❌ Image compression failed:', errorText);
+    return {
+      bytes,
+      mimeType,
+      warning: 'Image compression attempt failed; using original bytes.'
+    };
+  }
+
+  const result = await response.json();
+
+  if (!result.Files || !Array.isArray(result.Files) || !result.Files[0]?.FileData) {
+    console.error('❌ Image compression response invalid:', result);
+    return {
+      bytes,
+      mimeType,
+      warning: 'Image compression response invalid; using original bytes.'
+    };
+  }
+
+  const compressedBytes = base64ToUint8Array(result.Files[0].FileData);
+  console.log(
+    '🛠️ Image compressed via ConvertAPI',
+    {
+      beforeMB: (bytes.length / (1024 * 1024)).toFixed(2),
+      afterMB: (compressedBytes.length / (1024 * 1024)).toFixed(2)
+    }
+  );
+
+  return {
+    bytes: compressedBytes,
+    mimeType: 'image/jpeg',
+    warning: 'Image was recompressed to JPEG to fit payload recommendations.'
+  };
+}
+
 const LOVABLE_SYSTEM_PROMPT = `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych.
 Ekstrahuj informacje zgodnie z zunifikowanym schematem:
 - Priorytetowo używaj danych z tekstu dokumentu
@@ -443,17 +547,34 @@ serve(async (req) => {
       
     } else if (['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
       console.log('✅ Step 11: Detected image format, using base64...');
-      // For images: use base64 directly (no conversion needed)
-      const base64 = btoa(String.fromCharCode(...bytes));
-      
-      // Check size limit
-      if (bytes.length > 6 * 1024 * 1024) {
+      console.log('📝 Step 11a: Raw image byte length', bytes.length);
+
+      const { bytes: preparedBytes, mimeType: preparedMimeType, warning } = await shrinkImageIfNeeded(bytes, mimeType);
+
+      if (warning) {
+        console.warn(`⚠️ Image preprocessing warning: ${warning}`);
+      }
+
+      if (preparedBytes !== bytes) {
+        console.log(
+          '🛠️ Step 11b: Image bytes adjusted',
+          {
+            beforeMB: (bytes.length / (1024 * 1024)).toFixed(2),
+            afterMB: (preparedBytes.length / (1024 * 1024)).toFixed(2)
+          }
+        );
+      }
+
+      if (preparedBytes.length > 6 * 1024 * 1024) {
         throw new Error('Image file too large (max 6MB). Please reduce file size.');
       }
-      
+
+      const base64 = uint8ArrayToBase64(preparedBytes);
+      console.log('📝 Step 11c: Base64 payload length', base64.length);
+
       imageContent.push({
         type: 'image_url',
-        image_url: { url: `data:${mimeType};base64,${base64}` }
+        image_url: { url: `data:${preparedMimeType};base64,${base64}` }
       });
 
       previewImage = base64;
