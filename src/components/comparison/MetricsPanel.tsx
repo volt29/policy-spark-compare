@@ -1,9 +1,11 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { DollarSign, FileText, Shield, TrendingDown } from "lucide-react";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
+import type { SourceReference } from "@/types/comparison";
 
 interface MetricsPanelProps {
   offers: ComparisonOffer[];
+  sourceReferences?: Partial<Record<string, SourceReference | SourceReference[] | null>>;
 }
 
 export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {
