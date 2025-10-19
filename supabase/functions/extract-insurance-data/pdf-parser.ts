@@ -11,6 +11,20 @@ export interface PdfParseResult {
   pages: ParsedPage[];
   totalPages: number;
   success: boolean;
+  /**
+   * Full text representation with normalized newlines. Useful for downstream
+   * heuristics and keyword lookups.
+   */
+  fullText?: string;
+  /**
+   * Individual lines extracted from the PDF text (after normalization).
+   */
+  lines?: string[];
+  /**
+   * Mapping of each line (matching {@link lines}) to a 1-indexed page number.
+   * Enables downstream consumers to determine page ranges for snippets.
+   */
+  linePageMap?: number[];
   error?: string;
 }
 
@@ -34,33 +48,43 @@ export async function parsePdfText(
     
     // Split text by page markers (heuristic approach)
     // PDF-parse doesn't provide per-page text directly, so we need to estimate
-    const fullText = data.text || '';
-    const lines = fullText.split('\n');
-    
+    const fullText = (data.text || '').replace(/\r\n/g, '\n');
+    const lines = fullText.length > 0 ? fullText.split('\n') : [];
+
     // Estimate pages based on content length and page count
     const estimatedLinesPerPage = Math.ceil(lines.length / data.numpages);
     const pages: ParsedPage[] = [];
-    
+    const linePageMap: number[] = new Array(lines.length).fill(0);
+
     for (let i = 0; i < data.numpages; i++) {
       const startLine = i * estimatedLinesPerPage;
       const endLine = Math.min((i + 1) * estimatedLinesPerPage, lines.length);
       const pageText = lines.slice(startLine, endLine).join('\n');
-      
+
       pages.push({
         pageNumber: i + 1,
         text: pageText,
         metadata: {
-          estimatedLines: endLine - startLine
+          estimatedLines: endLine - startLine,
+          startLine,
+          endLine
         }
       });
+
+      for (let lineIndex = startLine; lineIndex < endLine; lineIndex++) {
+        linePageMap[lineIndex] = i + 1;
+      }
     }
-    
+
     console.log('✅ PDF Parser: Text extraction successful');
-    
+
     return {
       pages,
       totalPages: data.numpages,
-      success: true
+      success: true,
+      fullText,
+      lines,
+      linePageMap
     };
     
   } catch (error) {
