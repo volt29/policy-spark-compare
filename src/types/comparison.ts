@@ -20,6 +20,28 @@ export interface ComparisonAnalysisSection {
   offers?: ComparisonAnalysisOffer[] | null;
 }
 
+export interface ComparisonSummaryKeyNumber {
+  label: string;
+  value: string;
+}
+
+export interface ComparisonSummaryRecommendedOffer {
+  name?: string | null;
+  insurer?: string | null;
+  summary?: string | null;
+  key_numbers?: ComparisonSummaryKeyNumber[] | null;
+}
+
+export interface ComparisonSummary {
+  recommended_offer?: ComparisonSummaryRecommendedOffer | null;
+  reasons?: string[] | null;
+  risks?: string[] | null;
+  next_steps?: string[] | null;
+  fallback_text?: string | null;
+  raw_text?: string | null;
+  parse_error?: boolean | null;
+}
+
 export interface ComparisonAnalysis extends Record<string, unknown> {
   price_comparison?: ComparisonAnalysisSection | null;
   coverage_comparison?: ComparisonAnalysisSection | null;
@@ -27,49 +49,16 @@ export interface ComparisonAnalysis extends Record<string, unknown> {
   exclusions_diff?: ComparisonAnalysisSection | null;
   key_highlights?: string[] | null;
   recommendations?: string[] | null;
+  summary?: ComparisonSummary | null;
   raw_text?: string | null;
   parse_error?: boolean | null;
 }
 
-export function toComparisonAnalysis(input: Json | null): ComparisonAnalysis | null {
-  if (!input || typeof input !== "object") {
-    return null;
-  }
-
-  const asRecord = input as Record<string, unknown>;
-
-  const parseSection = (value: unknown): ComparisonAnalysisSection | null => {
-    if (!value || typeof value !== "object") {
-      return null;
-    }
-
-    const record = value as Record<string, unknown>;
-    const offersValue = record.offers;
-
-    if (!Array.isArray(offersValue)) {
-      return { offers: [] };
-    }
-
-    const offers: ComparisonAnalysisOffer[] = offersValue
-      .map((item) => {
-        if (!item || typeof item !== "object") {
-          return null;
-        }
-        const offerRecord = item as Record<string, unknown>;
-        const highlight = offerRecord.highlight;
-        return {
-          offer_id: offerRecord.offer_id as ComparisonAnalysisOffer["offer_id"],
-          calculation_id: offerRecord.calculation_id as ComparisonAnalysisOffer["calculation_id"],
-          highlight: typeof highlight === "string" ? highlight : null,
-          insurer: typeof offerRecord.insurer === "string" ? offerRecord.insurer : null,
-          note: typeof offerRecord.note === "string" ? offerRecord.note : null,
-          value: offerRecord.value as JsonValue,
-        } satisfies ComparisonAnalysisOffer;
-      })
-      .filter((item): item is ComparisonAnalysisOffer => item !== null);
-
-    return { offers };
-  };
+export function toComparisonAnalysis(
+  input: Json | null,
+  summaryInput?: unknown,
+): ComparisonAnalysis | null {
+  const analysis: ComparisonAnalysis = {};
 
   const parseStringArray = (value: unknown): string[] | null => {
     if (!Array.isArray(value)) {
@@ -79,23 +68,151 @@ export function toComparisonAnalysis(input: Json | null): ComparisonAnalysis | n
     return strings.length > 0 ? strings : null;
   };
 
-  const analysis: ComparisonAnalysis = {};
+  let asRecord: Record<string, unknown> | null = null;
 
-  const priceSection = parseSection(asRecord.price_comparison);
-  if (priceSection) {
-    analysis.price_comparison = priceSection;
+  if (input && typeof input === "object") {
+    asRecord = input as Record<string, unknown>;
+
+    const parseSection = (value: unknown): ComparisonAnalysisSection | null => {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+
+      const record = value as Record<string, unknown>;
+      const offersValue = record.offers;
+
+      if (!Array.isArray(offersValue)) {
+        return { offers: [] };
+      }
+
+      const offers: ComparisonAnalysisOffer[] = offersValue
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return null;
+          }
+          const offerRecord = item as Record<string, unknown>;
+          const highlight = offerRecord.highlight;
+          return {
+            offer_id: offerRecord.offer_id as ComparisonAnalysisOffer["offer_id"],
+            calculation_id: offerRecord.calculation_id as ComparisonAnalysisOffer["calculation_id"],
+            highlight: typeof highlight === "string" ? highlight : null,
+            insurer: typeof offerRecord.insurer === "string" ? offerRecord.insurer : null,
+            note: typeof offerRecord.note === "string" ? offerRecord.note : null,
+            value: offerRecord.value as JsonValue,
+          } satisfies ComparisonAnalysisOffer;
+        })
+        .filter((item): item is ComparisonAnalysisOffer => item !== null);
+
+      return { offers };
+    };
+
+    const priceSection = parseSection(asRecord.price_comparison);
+    if (priceSection) {
+      analysis.price_comparison = priceSection;
+    }
+
+    const coverageSection = parseSection(asRecord.coverage_comparison);
+    if (coverageSection) {
+      analysis.coverage_comparison = coverageSection;
+    }
+
+    const assistanceSection = parseSection(asRecord.assistance_comparison);
+    if (assistanceSection) {
+      analysis.assistance_comparison = assistanceSection;
+    }
+
+    const keyHighlights = parseStringArray(asRecord.key_highlights);
+    if (keyHighlights) {
+      analysis.key_highlights = keyHighlights;
+    }
+
+    const recommendations = parseStringArray(asRecord.recommendations);
+    if (recommendations) {
+      analysis.recommendations = recommendations;
+    }
+
+    if (typeof asRecord.raw_text === "string") {
+      analysis.raw_text = asRecord.raw_text;
+    }
+
+    if (typeof asRecord.parse_error === "boolean") {
+      analysis.parse_error = asRecord.parse_error;
+    }
   }
 
-  const coverageSection = parseSection(asRecord.coverage_comparison);
-  if (coverageSection) {
-    analysis.coverage_comparison = coverageSection;
-  }
+  const parseSummaryKeyNumbers = (
+    value: unknown,
+  ): ComparisonSummaryKeyNumber[] | null => {
+    if (!Array.isArray(value)) {
+      return null;
+    }
 
-  const assistanceSection = parseSection(asRecord.assistance_comparison);
-  if (assistanceSection) {
-    analysis.assistance_comparison = assistanceSection;
-  }
+    const metrics = value
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        const record = item as Record<string, unknown>;
+        const label = typeof record.label === "string" ? record.label.trim() : null;
+        const metricValue = typeof record.value === "string" ? record.value.trim() : null;
+        if (!label || !metricValue) {
+          return null;
+        }
+        return { label, value: metricValue } satisfies ComparisonSummaryKeyNumber;
+      })
+      .filter((item): item is ComparisonSummaryKeyNumber => item !== null);
 
+    return metrics.length > 0 ? metrics : null;
+  };
+
+  const parseRecommendedOffer = (
+    value: unknown,
+  ): ComparisonSummaryRecommendedOffer | null => {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : null;
+    const insurer = typeof record.insurer === "string" ? record.insurer.trim() : null;
+    const summary = typeof record.summary === "string" ? record.summary.trim() : null;
+    const keyNumbers = parseSummaryKeyNumbers(record.key_numbers ?? record.key_metrics);
+
+    if (!name && !insurer && !summary && !keyNumbers) {
+      return null;
+    }
+
+    const recommended: ComparisonSummaryRecommendedOffer = {};
+    if (name) recommended.name = name;
+    if (insurer) recommended.insurer = insurer;
+    if (summary) recommended.summary = summary;
+    if (keyNumbers) recommended.key_numbers = keyNumbers;
+
+    return recommended;
+  };
+
+  const parseSummaryRecord = (value: unknown): ComparisonSummary | null => {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    const summary: ComparisonSummary = {};
+
+    const recommendedOffer = parseRecommendedOffer(record.recommended_offer);
+    if (recommendedOffer) {
+      summary.recommended_offer = recommendedOffer;
+    }
+
+    const reasons = parseStringArray(record.reasons);
+    if (reasons) {
+      summary.reasons = reasons;
+    }
+
+    const risks = parseStringArray(record.risks);
+    if (risks) {
+      summary.risks = risks;
+    }
   const exclusionsSection = parseSection(asRecord.exclusions_diff);
   if (exclusionsSection) {
     analysis.exclusions_diff = exclusionsSection;
@@ -106,18 +223,104 @@ export function toComparisonAnalysis(input: Json | null): ComparisonAnalysis | n
     analysis.key_highlights = keyHighlights;
   }
 
-  const recommendations = parseStringArray(asRecord.recommendations);
-  if (recommendations) {
-    analysis.recommendations = recommendations;
+    const nextSteps = parseStringArray(record.next_steps);
+    if (nextSteps) {
+      summary.next_steps = nextSteps;
+    }
+
+    if (typeof record.fallback_text === "string" && record.fallback_text.trim().length > 0) {
+      summary.fallback_text = record.fallback_text.trim();
+    }
+
+    if (typeof record.raw_text === "string" && record.raw_text.trim().length > 0) {
+      summary.raw_text = record.raw_text.trim();
+    }
+
+    if (typeof record.summary_text === "string" && record.summary_text.trim().length > 0) {
+      summary.raw_text ??= record.summary_text.trim();
+      summary.fallback_text ??= record.summary_text.trim();
+    }
+
+    if (typeof record.parse_error === "boolean") {
+      summary.parse_error = record.parse_error;
+    }
+
+    return Object.keys(summary).length > 0 ? summary : null;
+  };
+
+  const parseSummaryInput = (value: unknown): ComparisonSummary | null => {
+    if (!value) {
+      return null;
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(trimmed);
+        const summary = parseSummaryRecord(parsed);
+        if (summary) {
+          if (!summary.raw_text && typeof parsed.raw_text === "string") {
+            const rawText = parsed.raw_text.trim();
+            if (rawText) {
+              summary.raw_text = rawText;
+            }
+          }
+          if (!summary.fallback_text && typeof parsed.fallback_text === "string") {
+            const fallback = parsed.fallback_text.trim();
+            if (fallback) {
+              summary.fallback_text = fallback;
+            }
+          }
+          if (typeof parsed.parse_error === "boolean") {
+            summary.parse_error = parsed.parse_error;
+          }
+          summary.fallback_text ??= summary.raw_text ?? trimmed;
+          summary.raw_text ??= trimmed;
+          return summary;
+        }
+      } catch {
+        // fall through to return legacy text format
+      }
+
+      return { fallback_text: trimmed, raw_text: trimmed, parse_error: true } satisfies ComparisonSummary;
+    }
+
+    const summary = parseSummaryRecord(value);
+    if (!summary) {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (!summary.raw_text && typeof record.raw_text === "string") {
+      const rawText = record.raw_text.trim();
+      if (rawText) {
+        summary.raw_text = rawText;
+      }
+    }
+    if (!summary.fallback_text && typeof record.fallback_text === "string") {
+      const fallback = record.fallback_text.trim();
+      if (fallback) {
+        summary.fallback_text = fallback;
+      }
+    }
+    if (typeof record.parse_error === "boolean") {
+      summary.parse_error = record.parse_error;
+    }
+    summary.fallback_text ??= summary.raw_text ?? null;
+
+    return summary;
+  };
+
+  const summaryFromInput =
+    parseSummaryInput(summaryInput) ?? (asRecord ? parseSummaryInput(asRecord.summary) : null);
+
+  if (summaryFromInput) {
+    analysis.summary = summaryFromInput;
   }
 
-  if (typeof asRecord.raw_text === "string") {
-    analysis.raw_text = asRecord.raw_text;
-  }
-
-  if (typeof asRecord.parse_error === "boolean") {
-    analysis.parse_error = asRecord.parse_error;
-  }
-
-  return analysis;
+  return Object.keys(analysis).length > 0 ? analysis : null;
 }
