@@ -1,6 +1,10 @@
 // Unified JSON Builder - constructs standardized offer structure
 
-import { ParsedSection } from './classifier.ts';
+import {
+  ParsedSection,
+  ProductTypeHeuristicResult,
+  inferProductTypeFromText
+} from './classifier.ts';
 
 function parseNumberValue(value: unknown): number | null {
   if (typeof value === 'number' && !Number.isNaN(value)) {
@@ -78,6 +82,20 @@ export interface UnifiedOffer {
   extraction_confidence: 'high' | 'medium' | 'low';
 }
 
+export interface UnifiedOfferSourceEntry {
+  category: string;
+  sectionType: ParsedSection['type'];
+  pageRange: { start: number; end: number } | null;
+  snippet: string;
+  confidence: number;
+}
+
+export interface UnifiedOfferBuildResult {
+  offer: UnifiedOffer;
+  sources: UnifiedOfferSourceEntry[];
+  productTypeHeuristic: ProductTypeHeuristicResult | null;
+}
+
 /**
  * Build unified offer structure from parsed sections and metadata
  */
@@ -89,49 +107,77 @@ export function buildUnifiedOffer(
     calculationId?: string;
   },
   aiExtractedData?: any
-): UnifiedOffer {
+): UnifiedOfferBuildResult {
   console.log('🔨 Builder: Constructing unified offer structure...');
-  
+
   const missingFields: string[] = [];
-  
+  const sourcesMap = new Map<string, UnifiedOfferSourceEntry>();
+
+  const registerSources = (sectionType: ParsedSection['type'], category: string) => {
+    sections
+      .filter(section => section.type === sectionType)
+      .forEach(section => {
+        const pageRangeKey = section.pageRange
+          ? `${section.pageRange.start}-${section.pageRange.end}`
+          : 'unknown';
+        const key = `${category}:${pageRangeKey}:${section.snippet}`;
+        if (!sourcesMap.has(key)) {
+          sourcesMap.set(key, {
+            category,
+            sectionType,
+            pageRange: section.pageRange,
+            snippet: section.snippet,
+            confidence: section.confidence
+          });
+        }
+      });
+  };
+
   // Extract offer_id from AI data or metadata
-  const offerId = metadata.calculationId || 
-                  aiExtractedData?.calculation_id || 
+  const offerId = metadata.calculationId ||
+                  aiExtractedData?.calculation_id ||
                   aiExtractedData?.calculationId ||
                   metadata.documentId;
   
   // Build insured array
   const insured = buildInsuredArray(sections, aiExtractedData, missingFields);
+  registerSources('insured', 'insured');
 
   // Build contracts
   const baseContracts = buildBaseContracts(sections, aiExtractedData, missingFields);
   const additionalContracts = buildAdditionalContracts(sections, aiExtractedData, missingFields);
-  
+  registerSources('base_contract', 'base_contracts');
+  registerSources('additional_contract', 'additional_contracts');
+
   // Extract discounts
   const discounts = extractDiscounts(sections, aiExtractedData);
-  
+  registerSources('discount', 'discounts');
+
   // Extract premiums
   const { beforeDiscounts, afterDiscounts } = extractPremiums(sections, aiExtractedData, missingFields);
-  
+  registerSources('premium', 'premiums');
+
   // Build assistance array
   const assistance = buildAssistanceArray(sections, aiExtractedData);
+  registerSources('assistance', 'assistance');
 
   // Extract exclusions
   const exclusions = buildExclusions(sections, aiExtractedData);
-  
+
   // Extract duration
   const duration = extractDuration(sections, aiExtractedData);
-  
+  registerSources('duration', 'duration');
+
   // Extract notes
   const notes = extractNotes(sections, aiExtractedData);
-  
+
   // Calculate confidence
   const extractionConfidence = calculateConfidence(missingFields, sections);
-  
+
   console.log(`✅ Builder: Offer structure complete (confidence: ${extractionConfidence})`);
   console.log(`📋 Missing fields: ${missingFields.length > 0 ? missingFields.join(', ') : 'none'}`);
-  
-  return {
+
+  const offer: UnifiedOffer = {
     offer_id: offerId,
     source_document: metadata.fileName,
     insured,
@@ -146,6 +192,40 @@ export function buildUnifiedOffer(
     notes,
     missing_fields: missingFields,
     extraction_confidence: extractionConfidence
+  };
+
+  const heuristicFragments: string[] = [];
+  if (typeof aiExtractedData?.product_type === 'string') {
+    heuristicFragments.push(aiExtractedData.product_type);
+  }
+  if (typeof aiExtractedData?.productType === 'string') {
+    heuristicFragments.push(aiExtractedData.productType);
+  }
+  if (Array.isArray(aiExtractedData?.base_contracts)) {
+    for (const contract of aiExtractedData.base_contracts) {
+      if (typeof contract?.name === 'string') {
+        heuristicFragments.push(contract.name);
+      }
+    }
+  }
+  if (Array.isArray(aiExtractedData?.additional_contracts)) {
+    for (const contract of aiExtractedData.additional_contracts) {
+      if (typeof contract?.name === 'string') {
+        heuristicFragments.push(contract.name);
+      }
+    }
+  }
+  sections.forEach(section => heuristicFragments.push(section.content));
+
+  const heuristicInput = heuristicFragments.join(' | ').trim();
+  const heuristicResult = heuristicInput.length > 0
+    ? inferProductTypeFromText(heuristicInput, 'builder')
+    : null;
+
+  return {
+    offer,
+    sources: Array.from(sourcesMap.values()),
+    productTypeHeuristic: heuristicResult
   };
 }
 
