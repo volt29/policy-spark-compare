@@ -25,6 +25,7 @@ import {
   Percent,
   Shield,
   Building2,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
