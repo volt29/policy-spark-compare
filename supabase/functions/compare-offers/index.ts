@@ -48,6 +48,21 @@ serve(async (req) => {
       throw new Error('Not all documents have been processed yet');
     }
 
+    const productTypeCounts = new Map<string, number>();
+    for (const doc of documentsWithData) {
+      const rawType = doc.extracted_data?.product_type;
+      if (typeof rawType === 'string') {
+        const normalized = rawType.trim();
+        if (normalized.length > 0) {
+          productTypeCounts.set(normalized, (productTypeCounts.get(normalized) ?? 0) + 1);
+        }
+      }
+    }
+
+    const aggregatedProductType = Array.from(productTypeCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([type]) => type)[0] ?? null;
+
     // Prepare data for AI comparison
     const offersData = documentsWithData.map((doc, idx) => ({
       offer_id: idx + 1,
@@ -123,7 +138,8 @@ serve(async (req) => {
       .from('comparisons')
       .update({
         comparison_data: comparisonData,
-        status: 'completed'
+        status: 'completed',
+        product_type: aggregatedProductType
       })
       .eq('id', comparison_id);
 

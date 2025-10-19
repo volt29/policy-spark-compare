@@ -24,7 +24,7 @@ import {
   Info,
   Percent,
   Shield,
-  Sparkles,
+  Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
@@ -257,10 +257,76 @@ export function ComparisonTable({
         <CardTitle>Szczegółowe porównanie</CardTitle>
       </CardHeader>
       <CardContent>
-        <TooltipProvider delayDuration={150}>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[200px]">Kategoria</TableHead>
+                {offers.map((offer, idx) => (
+                  <TableHead
+                    key={offer.id}
+                    className={cn(idx === bestOfferIndex && "bg-primary/5")}
+                  >
+                    <div className="space-y-1">
+                      <div className="font-semibold text-foreground">{offer.label}</div>
+                      {offer.insurer && (
+                        <Badge variant="outline" className="flex items-center gap-1 text-[11px]">
+                          <Building2 className="h-3 w-3" />
+                          {offer.insurer}
+                        </Badge>
+                      )}
+                      {idx === bestOfferIndex && (
+                        <Badge variant="default" className="text-xs">
+                          Rekomendowana
+                        </Badge>
+                      )}
+                    </div>
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow className="bg-muted/30">
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    <DollarSign className="w-4 h-4 text-primary" />
+                    Składka miesięczna
+                  </div>
+                </TableCell>
+                {offers.map((offer, idx) => {
+                  const premium = premiums[idx];
+                  const highlight = priceAnalyses[idx]?.highlight as HighlightTone;
+                  const highlightClass = getHighlightCellClass(highlight);
+                  return (
+                    <TableCell
+                      key={offer.id}
+                      className={cn(
+                        idx === bestOfferIndex && !highlightClass && "bg-primary/5",
+                        highlightClass,
+                      )}
+                    >
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          {lowestPremium !== null && premium !== null && premium === lowestPremium && (
+                            <ArrowDown className="w-4 h-4 text-success" />
+                          )}
+                          <span>
+                            {premium !== null
+                              ? formatCurrency(premium, currencies[idx])
+                              : "Brak danych"}
+                          </span>
+                        </div>
+                        {renderAiBlock(priceAnalyses[idx], "Analiza AI", highlight, "Brak komentarza AI")}
+                      </div>
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+
+              {priceAnalyses.some((analysis) => {
+                const metrics = getPriceMetrics(analysis);
+                return metrics.delta !== null || metrics.percent !== null;
+              }) && (
                 <TableRow>
                   <TableHead className="w-[240px]">Sekcja</TableHead>
                   {offers.map((offer, idx) => (

@@ -38,6 +38,18 @@ class StubBackend implements ComparisonBackend {
   insertedDocuments: Array<{ user_id: string; file_name: string; file_path: string } & Record<string, unknown>> = [];
   fetchCount = 0;
   invokedFunctions: Array<{ name: string; payload: Record<string, unknown> }> = [];
+  private comparisonRecord: {
+    id: string;
+    status: string;
+    document_ids: string[];
+    user_id: string;
+    product_type: string | null;
+    client_id: string | null;
+    comparison_data: unknown;
+    created_at: string;
+    report_url: string | null;
+    summary_text: string | null;
+  } | null = null;
 
   constructor(private readonly succeedPollingAt: number) {}
 
@@ -76,7 +88,7 @@ class StubBackend implements ComparisonBackend {
   }
 
   async createComparison(payload: any) {
-    return {
+    this.comparisonRecord = {
       id: "comparison-123",
       status: payload.status ?? "processing",
       document_ids: payload.document_ids,
@@ -87,6 +99,19 @@ class StubBackend implements ComparisonBackend {
       created_at: new Date().toISOString(),
       report_url: null,
       summary_text: null,
+    };
+
+    return this.comparisonRecord;
+  }
+
+  async getComparison() {
+    if (!this.comparisonRecord) {
+      throw new Error("comparison not created");
+    }
+
+    return {
+      ...this.comparisonRecord,
+      product_type: "OC/AC",
     };
   }
 }
@@ -106,13 +131,13 @@ describe("ComparisonService", () => {
     const result = await service.runComparisonFlow({
       userId: "user-1",
       files: [fileA, fileB],
-      productType: "OC/AC",
       onStageChange: (stage) => stages.push(stage),
     });
 
     expect(result).toEqual({
       comparisonId: "comparison-123",
       documentIds: ["doc-0", "doc-1"],
+      detectedProductType: "OC/AC",
     });
 
     expect(stages).toEqual([
@@ -154,6 +179,9 @@ describe("ComparisonService", () => {
       async createComparison() {
         throw new Error("should not be called");
       },
+      async getComparison() {
+        throw new Error("should not be called");
+      },
     };
     const service = new ComparisonService(failingBackend);
 
@@ -161,7 +189,6 @@ describe("ComparisonService", () => {
       service.runComparisonFlow({
         userId: "user-1",
         files: [createFile("Oferta #1.pdf"), createFile("Oferta #2.pdf")],
-        productType: "OC/AC",
       })
     ).rejects.toBeInstanceOf(ComparisonServiceError);
   });
@@ -177,7 +204,6 @@ describe("ComparisonService", () => {
     const promise = service.runComparisonFlow({
       userId: "user-1",
       files: [createFile("Oferta #1.pdf"), createFile("Oferta #2.pdf")],
-      productType: "OC/AC",
       signal: controller.signal,
       onStageChange: (stage) => {
         if (stage === "waiting_for_extraction") {

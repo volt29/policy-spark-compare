@@ -1,12 +1,9 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { DollarSign, FileText, Shield, TrendingDown } from "lucide-react";
+import type { ComparisonOffer } from "@/lib/comparison-utils";
 
 interface MetricsPanelProps {
-  offers: Array<{
-    id: string;
-    insurer: string;
-    data: any;
-  }>;
+  offers: ComparisonOffer[];
 }
 
 export function MetricsPanel({ offers }: MetricsPanelProps) {
