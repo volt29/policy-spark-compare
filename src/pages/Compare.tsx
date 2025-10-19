@@ -13,7 +13,6 @@ export default function Compare() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [clientName, setClientName] = useState("");
-  const [productType, setProductType] = useState("");
 
   const {
     files,
@@ -51,10 +50,14 @@ export default function Compare() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const result = await startComparison(productType || "OC/AC");
+    const result = await startComparison();
 
     if (result.status === "success") {
-      toast.success("Porównanie gotowe!");
+      toast.success("Porównanie gotowe!", {
+        description: result.detectedProductType
+          ? `Wykryty typ produktu: ${result.detectedProductType}`
+          : undefined,
+      });
       navigate(`/comparison/${result.comparisonId}`);
       return;
     }
@@ -111,25 +114,14 @@ export default function Compare() {
                 <CardDescription>Opcjonalnie: przypisz porównanie do klienta</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="client-name">Imię i nazwisko klienta</Label>
-                    <Input
-                      id="client-name"
-                      placeholder="Jan Kowalski"
-                      value={clientName}
-                      onChange={(e) => setClientName(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="product-type">Typ produktu</Label>
-                    <Input
-                      id="product-type"
-                      placeholder="np. OC/AC"
-                      value={productType}
-                      onChange={(e) => setProductType(e.target.value)}
-                    />
-                  </div>
+                <div className="space-y-2">
+                  <Label htmlFor="client-name">Imię i nazwisko klienta</Label>
+                  <Input
+                    id="client-name"
+                    placeholder="Jan Kowalski"
+                    value={clientName}
+                    onChange={(e) => setClientName(e.target.value)}
+                  />
                 </div>
               </CardContent>
             </Card>
