@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -18,6 +18,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { OfferCard } from "@/components/comparison/OfferCard";
+import { DocumentViewerDialog } from "@/components/comparison/DocumentViewerDialog";
+import {
+  DOCUMENT_TOOLTIP_EVENT,
+  type DocumentTooltipEventDetail,
+} from "@/lib/document-viewer-events";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
 import {
@@ -28,9 +33,12 @@ import {
 } from "@/lib/comparison-utils";
 import type { Database } from "@/integrations/supabase/types";
 import { toComparisonAnalysis } from "@/types/comparison";
+import { getSignedDownloadUrl } from "@/services/document-service";
 
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
+
+const clampPageNumber = (value: number) => (Number.isFinite(value) && value > 0 ? Math.floor(value) : 1);
 
 export default function ComparisonResult() {
   const { id } = useParams();
@@ -40,6 +48,11 @@ export default function ComparisonResult() {
   const [comparison, setComparison] = useState<ComparisonRow | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
+  const [viewerState, setViewerState] = useState({
+    isOpen: false,
+    documentId: null as string | null,
+    page: 1,
+  });
 
   useEffect(() => {
     if (!user) {
@@ -109,6 +122,79 @@ export default function ComparisonResult() {
 
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
 
+  const currentViewerDocument = useMemo(() => {
+    if (!viewerState.documentId) {
+      return null;
+    }
+    return documents.find((doc) => doc.id === viewerState.documentId) ?? null;
+  }, [documents, viewerState.documentId]);
+
+  const openDocumentPreview = useCallback(
+    (documentId: string, page = 1) => {
+      const document = documents.find((doc) => doc.id === documentId);
+      if (!document) {
+        toast.error("Nie znaleziono dokumentu do podglądu.");
+        return;
+      }
+
+      setViewerState({
+        isOpen: true,
+        documentId: document.id,
+        page: clampPageNumber(Number(page)),
+      });
+    },
+    [documents],
+  );
+
+  const handleDownloadDocument = useCallback(
+    async (documentId: string) => {
+      const document = documents.find((doc) => doc.id === documentId);
+      if (!document) {
+        toast.error("Nie znaleziono dokumentu do pobrania.");
+        return;
+      }
+
+      try {
+        const signedUrl = await getSignedDownloadUrl(document.file_path);
+        const newTab = window.open(signedUrl, "_blank", "noopener");
+        if (!newTab) {
+          window.location.href = signedUrl;
+        }
+      } catch (error) {
+        const description = error instanceof Error ? error.message : undefined;
+        toast.error("Nie udało się pobrać dokumentu.", {
+          description,
+        });
+      }
+    },
+    [documents],
+  );
+
+  const handleViewerOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      setViewerState((prev) => ({ ...prev, isOpen: false }));
+    }
+  }, []);
+
+  const handleViewerPageChange = useCallback((page: number) => {
+    setViewerState((prev) => ({ ...prev, page: clampPageNumber(page) }));
+  }, []);
+
+  useEffect(() => {
+    const listener = ((event: Event) => {
+      const detail = (event as CustomEvent<DocumentTooltipEventDetail>).detail;
+      if (!detail?.documentId) {
+        return;
+      }
+      openDocumentPreview(detail.documentId, detail.page ?? 1);
+    }) as EventListener;
+
+    window.addEventListener(DOCUMENT_TOOLTIP_EVENT, listener);
+    return () => {
+      window.removeEventListener(DOCUMENT_TOOLTIP_EVENT, listener);
+    };
+  }, [openDocumentPreview]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
@@ -168,7 +254,8 @@ export default function ComparisonResult() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-subtle">
+    <>
+      <div className="min-h-screen bg-gradient-subtle">
       {/* Sticky Header */}
       <div className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
@@ -215,6 +302,10 @@ export default function ComparisonResult() {
                   badges={badges.get(offer.id) || []}
                   isSelected={selectedOfferId === offer.id}
                   onSelect={() => setSelectedOfferId(offer.id === selectedOfferId ? null : offer.id)}
+                  onPreview={() => openDocumentPreview(offer.id)}
+                  onDownload={() => {
+                    void handleDownloadDocument(offer.id);
+                  }}
                 />
               ))}
             </div>
@@ -435,5 +526,16 @@ export default function ComparisonResult() {
         </div>
       )}
     </div>
+    <DocumentViewerDialog
+      isOpen={viewerState.isOpen}
+      document={currentViewerDocument}
+      page={viewerState.page}
+      onOpenChange={handleViewerOpenChange}
+      onPageChange={handleViewerPageChange}
+      onDownload={(document) => {
+        void handleDownloadDocument(document.id);
+      }}
+    />
+    </>
   );
 }
