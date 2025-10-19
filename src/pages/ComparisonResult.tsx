@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -8,7 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowLeft,
   ArrowRight,
+  CheckCircle,
   Download,
+  Eye,
   Loader2,
   Sparkles,
   BarChart3,
@@ -17,7 +19,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
-import { OfferCard } from "@/components/comparison/OfferCard";
+import { OfferCard, type OfferCardAction } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
 import {
@@ -32,6 +34,93 @@ import { toComparisonAnalysis } from "@/types/comparison";
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
 
+const DOCUMENTS_BUCKET = "documents";
+
+const normalizeString = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+};
+
+const detectProductType = (data: ExtractedOfferData | null): string | null => {
+  if (!data) return null;
+
+  const unifiedRecord = data.unified && typeof data.unified === "object"
+    ? (data.unified as Record<string, unknown>)
+    : null;
+
+  const candidates: Array<unknown> = [
+    (data as Record<string, unknown> | null)?.product_type,
+    (data as Record<string, unknown> | null)?.detected_product_type,
+    unifiedRecord?.product_type,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeString(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const getDocumentPublicUrl = (filePath: string | null | undefined): string | null => {
+  if (!filePath) return null;
+  try {
+    const { data } = supabase.storage.from(DOCUMENTS_BUCKET).getPublicUrl(filePath);
+    return data?.publicUrl ?? null;
+  } catch (error) {
+    console.warn("Nie udało się zbudować adresu URL dokumentu", error);
+    return null;
+  }
+};
+
+const createDownloadUrl = (url: string | null | undefined): string | null => {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("download", "1");
+    return parsed.toString();
+  } catch (error) {
+    console.warn("Nie udało się zbudować adresu pobierania", error);
+    return url;
+  }
+};
+
+const openInNewTab = (url: string | null | undefined): boolean => {
+  if (!url || typeof window === "undefined") {
+    return false;
+  }
+
+  const newWindow = window.open(url, "_blank", "noopener,noreferrer");
+  return !!newWindow;
+};
+
+const mapDocumentsToOffers = (documents: DocumentRow[]): ComparisonOffer[] => {
+  return documents.map((doc, idx) => {
+    const extracted = (doc.extracted_data ?? null) as ExtractedOfferData | null;
+    const label = `Oferta ${idx + 1}`;
+    const insurer = normalizeString(extracted?.insurer);
+    const calculationId = extractCalculationId(extracted);
+    const previewUrl = getDocumentPublicUrl(doc.file_path);
+
+    return {
+      id: doc.id,
+      label,
+      insurer,
+      data: extracted,
+      calculationId,
+      detectedProductType: detectProductType(extracted),
+      fileName: doc.file_name,
+      previewUrl,
+      downloadUrl: createDownloadUrl(previewUrl),
+    } satisfies ComparisonOffer;
+  });
+};
+
 export default function ComparisonResult() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -40,6 +129,59 @@ export default function ComparisonResult() {
   const [comparison, setComparison] = useState<ComparisonRow | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
+
+  const buildOfferActions = useCallback(
+    (offer: ComparisonOffer, isSelected: boolean): OfferCardAction[] => {
+      const notifyUnavailable = (message: string) => {
+        toast.info(message, {
+          description: offer.fileName ? `Plik: ${offer.fileName}` : undefined,
+        });
+      };
+
+      const previewHandler = () => {
+        if (!openInNewTab(offer.previewUrl)) {
+          notifyUnavailable("Podgląd dokumentu jest niedostępny");
+        }
+      };
+
+      const downloadHandler = () => {
+        const targetUrl = offer.downloadUrl ?? offer.previewUrl;
+        if (!openInNewTab(targetUrl)) {
+          notifyUnavailable("Nie udało się rozpocząć pobierania");
+        }
+      };
+
+      return [
+        {
+          key: "preview",
+          label: "Podgląd",
+          icon: Eye,
+          variant: "outline",
+          disabled: !offer.previewUrl,
+          onClick: previewHandler,
+        },
+        {
+          key: "download",
+          label: "Pobierz",
+          icon: Download,
+          variant: "outline",
+          disabled: !(offer.downloadUrl ?? offer.previewUrl),
+          onClick: downloadHandler,
+        },
+        {
+          key: "select",
+          label: isSelected ? "Wybrano" : "Wybierz ofertę",
+          icon: CheckCircle,
+          variant: isSelected ? "default" : "secondary",
+          active: isSelected,
+          onClick: () => {
+            setSelectedOfferId((current) => (current === offer.id ? null : offer.id));
+          },
+        },
+      ];
+    },
+    [setSelectedOfferId]
+  );
 
   useEffect(() => {
     if (!user) {
@@ -85,22 +227,7 @@ export default function ComparisonResult() {
     [comparison]
   );
 
-  const offers = useMemo<ComparisonOffer[]>(() => {
-    return documents.map((doc, idx) => {
-      const extracted = (doc.extracted_data ?? null) as ExtractedOfferData | null;
-      const insurerName =
-        typeof extracted?.insurer === "string" && extracted.insurer.trim().length > 0
-          ? extracted.insurer
-          : `Oferta ${idx + 1}`;
-
-      return {
-        id: doc.id,
-        insurer: insurerName,
-        data: extracted,
-        calculationId: extractCalculationId(extracted),
-      } satisfies ComparisonOffer;
-    });
-  }, [documents]);
+  const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
 
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis),
@@ -137,13 +264,22 @@ export default function ComparisonResult() {
 
   const summaryData = comparisonAnalysis.summary ?? null;
   const recommendedOffer = summaryData?.recommended_offer ?? null;
+  const recommendedOfferInsurerName = recommendedOffer?.insurer ?? null;
+  const recommendedOfferMatch = recommendedOfferInsurerName
+    ? offers.find(
+        (offer) =>
+          offer.insurer && offer.insurer.toLowerCase() === recommendedOfferInsurerName.toLowerCase(),
+      )
+    : null;
   const keyNumbers = recommendedOffer?.key_numbers ?? [];
-  const recommendedOfferTitle = recommendedOffer?.name ?? recommendedOffer?.insurer ?? null;
+  const recommendedOfferTitle =
+    recommendedOffer?.name ??
+    recommendedOfferMatch?.label ??
+    recommendedOfferInsurerName ??
+    null;
   const recommendedOfferInsurer =
-    recommendedOffer?.name &&
-    recommendedOffer?.insurer &&
-    recommendedOffer.insurer !== recommendedOffer.name
-      ? recommendedOffer.insurer
+    recommendedOfferInsurerName && recommendedOfferInsurerName !== recommendedOfferTitle
+      ? recommendedOfferMatch?.insurer ?? recommendedOfferInsurerName
       : null;
   const fallbackSummaryText =
     summaryData?.fallback_text ??
@@ -163,7 +299,7 @@ export default function ComparisonResult() {
     if (!selectedOffer) return;
     localStorage.setItem(`comparison_${id}_selected`, selectedOfferId!);
     toast.success("Oferta została zapisana!", {
-      description: `Wybrano: ${selectedOffer.insurer}`
+      description: `Wybrano: ${selectedOffer.insurer ?? selectedOffer.label}`
     });
   };
 
@@ -208,15 +344,22 @@ export default function ComparisonResult() {
           {/* Tab 1: Offer Overview */}
           <TabsContent value="overview" className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {offers.map((offer, idx) => (
+              {offers.map((offer) => {
+                const isSelected = selectedOfferId === offer.id;
+                const actions = buildOfferActions(offer, isSelected);
+                return (
                 <OfferCard
                   key={offer.id}
                   offer={offer}
+                  label={offer.label}
+                  detectedProductType={offer.detectedProductType}
                   badges={badges.get(offer.id) || []}
-                  isSelected={selectedOfferId === offer.id}
-                  onSelect={() => setSelectedOfferId(offer.id === selectedOfferId ? null : offer.id)}
+                  isSelected={isSelected}
+                  onSelect={() => setSelectedOfferId((current) => (current === offer.id ? null : offer.id))}
+                  actions={actions}
                 />
-              ))}
+                );
+              })}
             </div>
           </TabsContent>
 
@@ -415,7 +558,10 @@ export default function ComparisonResult() {
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-lg truncate">
-                  Wybrana oferta: {selectedOffer.insurer}
+                  Wybrana oferta: {selectedOffer.label}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {selectedOffer.insurer && `Ubezpieczyciel: ${selectedOffer.insurer}`}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {selectedOffer.calculationId && `ID kalkulacji: ${selectedOffer.calculationId}`}
