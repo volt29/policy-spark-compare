@@ -51,7 +51,6 @@ type UploadResult = {
 type RunFlowParams = {
   userId: string;
   files: File[];
-  productType: string;
   onStageChange?: (stage: ComparisonStage) => void;
   signal?: AbortSignal;
 };
@@ -66,6 +65,7 @@ export interface ComparisonBackend {
   invokeFunction(name: string, payload: Record<string, unknown>): Promise<void>;
   fetchDocuments(ids: string[]): Promise<DocumentStatusRecord[]>;
   createComparison(payload: ComparisonInsert): Promise<ComparisonRow>;
+  getComparison(id: string): Promise<ComparisonRow>;
 }
 
 const STORAGE_BUCKET = "insurance-documents";
@@ -135,6 +135,19 @@ export function createSupabaseComparisonBackend(
 
       return data;
     },
+    async getComparison(id) {
+      const { data, error } = await client
+        .from("comparisons")
+        .select("*")
+        .eq("id", id)
+        .single();
+
+      if (error || !data) {
+        throw new Error(error?.message ?? "Nie udało się pobrać porównania");
+      }
+
+      return data;
+    },
   };
 }
 
@@ -151,10 +164,13 @@ export class ComparisonService {
   async runComparisonFlow({
     userId,
     files,
-    productType,
     onStageChange,
     signal,
-  }: RunFlowParams): Promise<{ comparisonId: string; documentIds: string[] }> {
+  }: RunFlowParams): Promise<{
+    comparisonId: string;
+    documentIds: string[];
+    detectedProductType: string | null;
+  }> {
     this.ensureNotAborted(signal, "uploading_files");
     onStageChange?.("uploading_files");
     const uploadedFiles = await this.uploadFiles(userId, files);
@@ -176,7 +192,6 @@ export class ComparisonService {
     const comparison = await this.createComparison({
       userId,
       documentIds: documents.map((doc) => doc.id),
-      productType,
     });
 
     this.ensureNotAborted(signal, "comparing_offers");
@@ -191,7 +206,22 @@ export class ComparisonService {
       comparison_id: comparison.id,
     });
 
-    return { comparisonId: comparison.id, documentIds: documents.map((d) => d.id) };
+    let finalComparison: ComparisonRow;
+    try {
+      finalComparison = await this.backend.getComparison(comparison.id);
+    } catch (error) {
+      throw new ComparisonServiceError(
+        "Nie udało się pobrać wyników porównania.",
+        "generating_summary",
+        error
+      );
+    }
+
+    return {
+      comparisonId: comparison.id,
+      documentIds: documents.map((d) => d.id),
+      detectedProductType: finalComparison.product_type ?? null,
+    };
   }
 
   private async uploadFiles(userId: string, files: File[]): Promise<UploadResult[]> {
@@ -309,15 +339,12 @@ export class ComparisonService {
   private async createComparison({
     userId,
     documentIds,
-    productType,
   }: {
     userId: string;
     documentIds: string[];
-    productType: string;
   }): Promise<ComparisonRow> {
     const payload: ComparisonInsert = {
       user_id: userId,
-      product_type: productType,
       document_ids: documentIds,
       status: "processing",
     };

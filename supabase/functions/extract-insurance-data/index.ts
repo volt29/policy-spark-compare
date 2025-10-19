@@ -1,8 +1,14 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
-import { parsePdfText, combinePagesText } from './pdf-parser.ts';
-import { segmentInsuranceSections, calculateExtractionConfidence } from './classifier.ts';
-import { buildUnifiedOffer } from './unified-builder.ts';
+import { parsePdfText, combinePagesText, ParsedPage } from './pdf-parser.ts';
+import {
+  segmentInsuranceSections,
+  calculateExtractionConfidence,
+  ParsedSection,
+  SectionSource,
+  ProductTypeHeuristicResult
+} from './classifier.ts';
+import { buildUnifiedOffer, UnifiedOfferBuildResult } from './unified-builder.ts';
 
 type LovableContentBlock = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
@@ -197,6 +203,78 @@ function mergeExtractedData(base: any, addition: any) {
   return result;
 }
 
+function normalizeProductTypeValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (value && typeof value === 'object') {
+    const possibleKeys = ['value', 'label', 'name', 'type'];
+    for (const key of possibleKeys) {
+      const candidate = (value as Record<string, unknown>)[key];
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (trimmed.length > 0) {
+          return trimmed;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function mergeEntriesByKey(
+  existing: unknown,
+  incoming: Array<Record<string, unknown>>,
+  key: string | string[]
+) {
+  const keys = Array.isArray(key) ? key : [key];
+
+  const resolveIdentifier = (item: Record<string, unknown>) => {
+    for (const candidate of keys) {
+      const identifier = item[candidate];
+      if (identifier !== undefined && identifier !== null && identifier !== '') {
+        return String(identifier);
+      }
+    }
+    return null;
+  };
+
+  const baseArray = Array.isArray(existing)
+    ? existing.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>>
+    : [];
+
+  const merged = new Map<string, Record<string, unknown>>();
+
+  for (const item of baseArray) {
+    const identifier = resolveIdentifier(item);
+    if (!identifier) {
+      merged.set(`__idx_${merged.size}`, { ...item });
+    } else {
+      merged.set(identifier, { ...item });
+    }
+  }
+
+  for (const item of incoming) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const identifier = resolveIdentifier(item);
+    if (!identifier) {
+      merged.set(`__incoming_${merged.size}`, { ...item });
+      continue;
+    }
+
+    const existingEntry = merged.get(identifier) ?? {};
+    merged.set(identifier, { ...existingEntry, ...item });
+  }
+
+  return Array.from(merged.values());
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -368,24 +446,30 @@ serve(async (req) => {
     
     // Step 1: Try to extract text from PDF
     let parsedText = '';
-    let parsedPages: string[] = [];
+    let parsedPages: ParsedPage[] = [];
+    let parsedLines: string[] | undefined;
+    let linePageMap: number[] | undefined;
     let useTextExtraction = false;
-    
+
     if (mimeType === 'application/pdf') {
       console.log('📖 Step 11a: Attempting text extraction from PDF...');
       const parseResult = await parsePdfText(bytes);
-      
+
       if (parseResult.success && parseResult.pages.length > 0) {
-        parsedText = combinePagesText(parseResult.pages);
-        parsedPages = parseResult.pages.map(p => p.text);
+        parsedText = parseResult.fullText ?? combinePagesText(parseResult.pages);
+        parsedPages = parseResult.pages;
+        parsedLines = parseResult.lines;
+        linePageMap = parseResult.linePageMap;
         useTextExtraction = parsedText.length > 100; // Only use if we got meaningful text
         console.log(`✅ Text extraction ${useTextExtraction ? 'successful' : 'insufficient'}: ${parsedText.length} chars`);
       }
     }
-    
+
     // Prepare containers for AI payloads
     let imageContent: LovableContentBlock[] = [];
-    let sections: ReturnType<typeof segmentInsuranceSections> = [];
+    let sections: ParsedSection[] = [];
+    let segmentationSources: SectionSource[] = [];
+    let segmentationProductHeuristic: ProductTypeHeuristicResult | null = null;
     let textConfidence: 'high' | 'medium' | 'low' = 'low';
     let previewImage: string | null = null;
     
@@ -421,7 +505,15 @@ serve(async (req) => {
         // Build content array - prefer text if available
         if (useTextExtraction && parsedText) {
           console.log('🔍 Step 14a: Classifying document sections...');
-          sections = segmentInsuranceSections(parsedPages);
+          const segmentationOutput = segmentInsuranceSections({
+            pages: parsedPages,
+            linePageMap,
+            lines: parsedLines,
+            fullText: parsedText
+          });
+          sections = segmentationOutput.sections;
+          segmentationSources = segmentationOutput.sources;
+          segmentationProductHeuristic = segmentationOutput.productTypeHeuristic;
           textConfidence = calculateExtractionConfidence(sections);
           previewImage = base64Pages.length > 0 ? base64Pages[0] : null;
           console.log(`📊 Section classification complete (confidence: ${textConfidence})`);
@@ -431,7 +523,7 @@ serve(async (req) => {
           imageContent = [
             { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
             ...base64Pages.map(base64 => ({
-              type: 'image_url',
+              type: 'image_url' as const,
               image_url: { url: `data:image/jpeg;base64,${base64}` }
             }))
           ];
@@ -690,16 +782,18 @@ serve(async (req) => {
           const start = segmentIndex * pagesPerSegment;
           const end = Math.min(start + pagesPerSegment, parsedPages.length);
           const segmentPages = parsedPages.slice(start, end);
-          const segmentText = segmentPages.join('\n\n');
-          const segmentSections = segmentInsuranceSections(segmentPages);
+          const segmentText = segmentPages.map(page => page.text).join('\n\n');
+          const segmentSections = segmentInsuranceSections({ pages: segmentPages }).sections;
           const segmentSummary = segmentSections
             .map(section => `${section.type}(${Math.round(section.confidence * 100)}%)`)
             .join(', ') || 'brak sekcji';
+          const segmentPageStart = segmentPages[0]?.pageNumber ?? start + 1;
+          const segmentPageEnd = segmentPages[segmentPages.length - 1]?.pageNumber ?? end;
 
           const segmentContent: LovableContentBlock[] = [
             {
               type: 'text',
-              text: `Segment ${segmentIndex + 1}/${segmentsCount}. Strony ${start + 1}-${end}. Tekst:\n\n${segmentText}`
+              text: `Segment ${segmentIndex + 1}/${segmentsCount}. Strony ${segmentPageStart}-${segmentPageEnd}. Tekst:\n\n${segmentText}`
             },
             {
               type: 'text',
@@ -761,7 +855,7 @@ serve(async (req) => {
 
       console.log('✅ Step 20: Building unified offer structure...');
 
-      const unifiedOffer = buildUnifiedOffer(
+      const unifiedOfferResult = buildUnifiedOffer(
         sections,
         {
           documentId: document_id,
@@ -770,11 +864,75 @@ serve(async (req) => {
         },
         extractedData
       );
+      const unifiedOffer = unifiedOfferResult.offer;
+      const unifiedSources = unifiedOfferResult.sources;
+      const builderProductHeuristic = unifiedOfferResult.productTypeHeuristic;
 
       console.log('✅ Step 21: Unified offer structure complete');
       console.log(`📊 Offer ID: ${unifiedOffer.offer_id}`);
       console.log(`📊 Confidence: ${unifiedOffer.extraction_confidence}`);
       console.log(`📊 Missing fields: ${unifiedOffer.missing_fields.length}`);
+
+      const aggregatedSources = [
+        ...segmentationSources.map(source => ({
+          origin: 'segmentation' as const,
+          category: source.sectionType,
+          sectionType: source.sectionType,
+          pageRange: source.pageRange ?? null,
+          snippet: source.snippet,
+          confidence: source.confidence
+        })),
+        ...unifiedSources.map(source => ({
+          origin: 'unified_builder' as const,
+          category: source.category,
+          sectionType: source.sectionType,
+          pageRange: source.pageRange ?? null,
+          snippet: source.snippet,
+          confidence: source.confidence
+        }))
+      ];
+
+      const aiProductType = typeof extractedData?.product_type === 'string'
+        ? extractedData.product_type
+        : typeof extractedData?.productType === 'string'
+          ? extractedData.productType
+          : null;
+
+      const heuristicPredictions = {
+        segmentation: segmentationProductHeuristic,
+        unified_builder: builderProductHeuristic
+      };
+
+      const resolvedProductType =
+        aiProductType ||
+        segmentationProductHeuristic?.predictedType ||
+        builderProductHeuristic?.predictedType ||
+        null;
+
+      if (aiProductType) {
+        console.log(`📊 AI product type: ${aiProductType}`);
+      }
+      if (segmentationProductHeuristic?.predictedType) {
+        console.log(
+          `📊 Segmentation heuristic product type: ${segmentationProductHeuristic.predictedType} (${Math.round(segmentationProductHeuristic.confidence * 100)}%)`
+        );
+      }
+      if (builderProductHeuristic?.predictedType) {
+        console.log(
+          `📊 Builder heuristic product type: ${builderProductHeuristic.predictedType} (${Math.round(builderProductHeuristic.confidence * 100)}%)`
+        );
+      }
+
+      if (!resolvedProductType) {
+        console.warn('⚠️ Product type not detected by AI ani heurystyki');
+      }
+
+      const currencyNormalization = {
+        status: 'pending',
+        normalized_fields: [],
+        available: false,
+        notes: 'awaiting normalization pipeline'
+      };
 
       const diagnostics = {
         extraction_confidence: unifiedOffer.extraction_confidence,
@@ -783,23 +941,76 @@ serve(async (req) => {
           index,
           type: section.type,
           confidence: section.confidence,
-          keywords: section.keywords
+          keywords: section.keywords,
+          pageRange: section.pageRange,
+          snippet: section.snippet
         })),
         text_confidence: textConfidence,
         segments_processed: useTextExtraction && parsedPages.length > 0
           ? Math.ceil(parsedPages.length / 3)
-          : 1
+          : 1,
+        product_type_predictions: {
+          ai: aiProductType,
+          heuristic: heuristicPredictions,
+          resolved: resolvedProductType
+        },
+        sources: aggregatedSources,
+        currency_normalization: currencyNormalization
       };
 
       // Merge unified structure with original extracted data for backward compatibility
-      const finalData = {
-        ...extractedData,
-        unified: unifiedOffer,
-        diagnostics
+      const finalData: Record<string, any> = {
+        ...extractedData
       };
 
+      if (resolvedProductType && !finalData.product_type) {
+        finalData.product_type = resolvedProductType;
+      }
+      if (resolvedProductType && !finalData.productType) {
+        finalData.productType = resolvedProductType;
+      }
+
+      const existingPredictions =
+        typeof finalData.product_type_predictions === 'object' && finalData.product_type_predictions !== null
+          ? finalData.product_type_predictions
+          : {};
+      finalData.product_type_predictions = {
+        ...existingPredictions,
+        ai: aiProductType,
+        heuristic: heuristicPredictions,
+        resolved: resolvedProductType
+      };
+
+      const existingSources = Array.isArray(finalData.sources) ? finalData.sources : [];
+      finalData.sources = [...existingSources, ...aggregatedSources];
+      finalData.currency_normalization = {
+        ...(typeof finalData.currency_normalization === 'object' && finalData.currency_normalization !== null
+          ? finalData.currency_normalization
+          : {}),
+        ...currencyNormalization
+      };
+      finalData.unified = unifiedOffer;
+      finalData.diagnostics = diagnostics;
+
+      const normalizedProductType = normalizeProductTypeValue(finalData.product_type);
+      finalData.product_type = normalizedProductType;
+
+      if (finalData.resolved && typeof finalData.resolved === 'object') {
+        finalData.resolved = {
+          ...finalData.resolved,
+          product_type: normalizedProductType
+        };
+      }
+
+      if (Array.isArray(finalData.documents)) {
+        finalData.documents = finalData.documents.map((doc: any) => ({
+          ...doc,
+          product_type: normalizeProductTypeValue(doc?.product_type ?? normalizedProductType)
+        }));
+      }
+
       console.log('✅ Step 22: Updating document with extracted data...');
-    
+
     // Update document with extracted data
     const { error: updateError } = await supabase
       .from('documents')

@@ -1,15 +1,12 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { DollarSign, FileText, Shield, TrendingDown } from "lucide-react";
+import type { ComparisonOffer } from "@/lib/comparison-utils";
 
 interface MetricsPanelProps {
-  offers: Array<{
-    id: string;
-    insurer: string;
-    data: any;
-  }>;
+  offers: ComparisonOffer[];
 }
 
-export function MetricsPanel({ offers }: MetricsPanelProps) {
+export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {
   // Support both old and new unified format
   const premiums = offers
     .map(o => {
@@ -32,35 +29,40 @@ export function MetricsPanel({ offers }: MetricsPanelProps) {
 
   const metrics = [
     {
+      key: "offerCount" as const,
       label: "Liczba ofert",
       value: offerCount.toString(),
       icon: FileText,
-      color: "text-primary"
+      color: "text-primary",
     },
     {
+      key: "lowestPremium" as const,
       label: "Najniższa składka",
       value: lowestPremium > 0 ? `${lowestPremium.toLocaleString('pl-PL')} PLN` : "Brak danych",
       icon: TrendingDown,
-      color: "text-success"
+      color: "text-success",
     },
     {
+      key: "highestCoverage" as const,
       label: "Najwyższa ochrona",
       value: highestCoverage > 0 ? `${highestCoverage.toLocaleString('pl-PL')} PLN` : "Brak danych",
       icon: Shield,
-      color: "text-blue-600"
+      color: "text-blue-600",
     },
     {
+      key: "averagePremium" as const,
       label: "Średnia składka",
       value: avgPremium > 0 ? `${Math.round(avgPremium).toLocaleString('pl-PL')} PLN` : "Brak danych",
       icon: DollarSign,
-      color: "text-primary"
-    }
+      color: "text-primary",
+    },
   ];
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
       {metrics.map((metric, idx) => {
         const Icon = metric.icon;
+        const reference = sourceReferences?.[metric.key];
         return (
           <Card key={idx}>
             <CardContent className="p-6">
@@ -70,7 +72,9 @@ export function MetricsPanel({ offers }: MetricsPanelProps) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-muted-foreground truncate">{metric.label}</div>
-                  <div className="text-xl font-bold mt-1 truncate">{metric.value}</div>
+                  <SourceTooltip reference={reference}>
+                    <div className="text-xl font-bold mt-1 truncate">{metric.value}</div>
+                  </SourceTooltip>
                 </div>
               </div>
             </CardContent>
