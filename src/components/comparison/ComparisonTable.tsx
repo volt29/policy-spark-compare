@@ -1,28 +1,41 @@
-import { useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Fragment, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   AlertCircle,
-  ArrowDown,
-  ArrowUp,
   ChevronDown,
   DollarSign,
+  FileWarning,
   Heart,
+  Info,
   Percent,
   Shield,
   Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getPremium, type ComparisonOffer } from "@/lib/comparison-utils";
-import type {
-  ComparisonAnalysis,
-  ComparisonAnalysisOffer,
-  ComparisonAnalysisSection,
-} from "@/types/comparison";
-
-type HighlightTone = "best" | "warning" | "neutral" | undefined;
+import type { ComparisonOffer } from "@/lib/comparison-utils";
+import {
+  type ComparisonDiffStatus,
+  type ComparisonSection,
+  type ComparisonSectionRow,
+  type ComparisonValueCell,
+  type HighlightTone,
+} from "@/lib/buildComparisonSections";
+import { usePersistentSectionState } from "@/hooks/usePersistentSectionState";
 
 const HIGHLIGHT_CELL_CLASSES: Record<Exclude<HighlightTone, "neutral" | undefined>, string> = {
   best: "bg-emerald-50 border-l-4 border-emerald-400 dark:bg-emerald-900/30 dark:border-emerald-700",
@@ -39,46 +52,34 @@ const HIGHLIGHT_BADGE_CLASSES: Record<Exclude<HighlightTone, "neutral" | undefin
   warning: "bg-amber-500/15 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200",
 };
 
-const normalizeKey = (value: unknown): string | null => {
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value.toString();
-  }
-  return null;
+const SECTION_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  price: DollarSign,
+  coverage: Shield,
+  assistance: Heart,
+  exclusions: AlertCircle,
 };
 
-const toNumber = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+const ROW_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  price: DollarSign,
+  delta: Sparkles,
+  coverage: Shield,
+  percent: Percent,
+  assistance: Heart,
+  alert: AlertCircle,
 };
 
-const formatCurrency = (value: number, currency: string) => {
-  const safeCurrency = /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : "PLN";
-  try {
-    return new Intl.NumberFormat("pl-PL", {
-      style: "currency",
-      currency: safeCurrency,
-      maximumFractionDigits: 2,
-    }).format(value);
-  } catch {
-    return `${value.toLocaleString("pl-PL", { maximumFractionDigits: 2 })} ${safeCurrency}`;
-  }
+const DIFF_BADGE_LABEL: Record<ComparisonDiffStatus, string> = {
+  equal: "Brak różnic",
+  different: "Różnice",
+  partial: "Niepełne dane",
+  missing: "Brak danych",
 };
 
-const getOfferCurrency = (offer: ComparisonOffer): string => {
-  const legacyCurrency = offer.data?.premium?.currency;
-  if (typeof legacyCurrency === "string" && legacyCurrency.trim().length > 0) {
-    return legacyCurrency.trim().toUpperCase();
-  }
-  return "PLN";
+const DIFF_BADGE_CLASS: Record<ComparisonDiffStatus, string> = {
+  equal: "border-emerald-200 bg-emerald-500/10 text-emerald-700 dark:border-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-200",
+  different: "border-amber-200 bg-amber-500/10 text-amber-700 dark:border-amber-600 dark:bg-amber-500/10 dark:text-amber-200",
+  partial: "border-sky-200 bg-sky-500/10 text-sky-700 dark:border-sky-600 dark:bg-sky-500/10 dark:text-sky-200",
+  missing: "border-muted bg-muted text-muted-foreground",
 };
 
 const getHighlightCellClass = (highlight: HighlightTone) => {
@@ -88,17 +89,17 @@ const getHighlightCellClass = (highlight: HighlightTone) => {
   return HIGHLIGHT_CELL_CLASSES[highlight];
 };
 
-const getHighlightNoteClass = (highlight: HighlightTone) => {
-  if (!highlight || highlight === "neutral") {
-    return "border border-muted";
-  }
-  return HIGHLIGHT_NOTE_CLASSES[highlight];
-};
-
 const getHighlightLabel = (highlight: HighlightTone) => {
   if (highlight === "best") return "Rekomendacja AI";
   if (highlight === "warning") return "Ostrzeżenie";
   return null;
+};
+
+const getHighlightNoteClass = (highlight: HighlightTone) => {
+  if (!highlight || highlight === "neutral") {
+    return "border border-muted bg-muted/40";
+  }
+  return HIGHLIGHT_NOTE_CLASSES[highlight];
 };
 
 const getHighlightBadgeClass = (highlight: HighlightTone) => {
@@ -108,230 +109,142 @@ const getHighlightBadgeClass = (highlight: HighlightTone) => {
   return HIGHLIGHT_BADGE_CLASSES[highlight];
 };
 
-const collectTextMessages = (value: unknown): string[] => {
-  if (!value) return [];
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed ? [trimmed] : [];
+const getRowDiffIndicatorClass = (status: ComparisonDiffStatus) => {
+  if (status === "different") {
+    return "relative pl-5 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-1 before:rounded-full before:bg-amber-500";
   }
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => collectTextMessages(entry)).filter(Boolean);
+  if (status === "partial") {
+    return "relative pl-5 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-1 before:rounded-full before:bg-muted";
   }
-  if (typeof value === "object") {
-    return Object.values(value as Record<string, unknown>)
-      .flatMap((entry) => collectTextMessages(entry))
-      .filter(Boolean);
-  }
-  return [];
+  return "pl-5";
 };
 
-const getAiMessages = (analysis?: ComparisonAnalysisOffer): string[] => {
-  if (!analysis) return [];
-  const messages: string[] = [];
-
-  if (typeof analysis.note === "string" && analysis.note.trim().length > 0) {
-    messages.push(analysis.note.trim());
+const getValueCellDiffClass = (status: ComparisonDiffStatus) => {
+  if (status === "different") {
+    return "relative pl-4 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-1 before:rounded-full before:bg-amber-400";
   }
-
-  const valueMessages = collectTextMessages(analysis.value);
-  valueMessages.forEach((message) => {
-    if (!messages.includes(message)) {
-      messages.push(message);
-    }
-  });
-
-  return messages;
-};
-
-const createAnalysisLookup = (
-  section?: ComparisonAnalysisSection | null,
-): Map<string, ComparisonAnalysisOffer> => {
-  const map = new Map<string, ComparisonAnalysisOffer>();
-  const offers = section?.offers ?? [];
-  offers.forEach((analysisOffer, idx) => {
-    const keys = [
-      normalizeKey(analysisOffer.offer_id),
-      normalizeKey(analysisOffer.calculation_id),
-      `index:${idx}`,
-    ].filter((key): key is string => Boolean(key));
-
-    keys.forEach((key) => map.set(key, analysisOffer));
-  });
-  return map;
-};
-
-const getOfferAnalysis = (
-  lookup: Map<string, ComparisonAnalysisOffer>,
-  offer: ComparisonOffer,
-  index: number,
-): ComparisonAnalysisOffer | undefined => {
-  const keys = [
-    normalizeKey(offer.calculationId),
-    normalizeKey(offer.id),
-    `index:${index}`,
-  ].filter((key): key is string => Boolean(key));
-
-  for (const key of keys) {
-    const match = lookup.get(key);
-    if (match) {
-      return match;
-    }
+  if (status === "partial") {
+    return "relative pl-4 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-1 before:rounded-full before:bg-muted";
   }
-  return undefined;
-};
-
-const getPriceMetrics = (analysis?: ComparisonAnalysisOffer) => {
-  if (!analysis) {
-    return { delta: null as number | null, percent: null as number | null };
-  }
-
-  const value = analysis.value;
-  const record = value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-  const candidateKeys = [
-    "delta_vs_average",
-    "difference_vs_average",
-    "difference_from_average",
-    "delta",
-  ];
-  const percentKeys = [
-    "percent_vs_average",
-    "percentage_vs_average",
-    "percent_difference",
-    "percentage_difference",
-    "percent",
-  ];
-
-  let delta: number | null = null;
-  let percent: number | null = null;
-
-  if (record) {
-    for (const key of candidateKeys) {
-      const valueCandidate = record[key];
-      const numeric = toNumber(valueCandidate);
-      if (numeric !== null) {
-        delta = numeric;
-        break;
-      }
-    }
-
-    for (const key of percentKeys) {
-      const valueCandidate = record[key];
-      const numeric = toNumber(valueCandidate);
-      if (numeric !== null) {
-        percent = numeric;
-        break;
-      }
-    }
-  }
-
-  return { delta, percent };
-};
-
-const formatPercent = (value: number) => {
-  const formatted = value.toLocaleString("pl-PL", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 1,
-  });
-  return value > 0 ? `+${formatted}%` : `${formatted}%`;
+  return "pl-4";
 };
 
 interface ComparisonTableProps {
+  comparisonId: string;
   offers: ComparisonOffer[];
+  sections: ComparisonSection[];
   bestOfferIndex?: number;
-  comparisonAnalysis: ComparisonAnalysis | null;
 }
 
-export function ComparisonTable({ offers, bestOfferIndex, comparisonAnalysis }: ComparisonTableProps) {
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+export function ComparisonTable({
+  comparisonId,
+  offers,
+  sections,
+  bestOfferIndex,
+}: ComparisonTableProps) {
+  const defaults = useMemo(
+    () => Object.fromEntries(sections.map((section) => [section.id, section.defaultExpanded ?? true])),
+    [sections],
+  );
 
-  const toggleRow = (rowId: string) => {
-    setExpandedRows((prev) => ({ ...prev, [rowId]: !prev[rowId] }));
+  const { isSectionOpen, toggleSection } = usePersistentSectionState(
+    comparisonId,
+    sections.map((section) => section.id),
+    { defaults },
+  );
+
+  const renderValueContent = (
+    cell: ComparisonValueCell,
+    row: ComparisonSectionRow,
+  ) => {
+    const hasTooltip = Boolean(cell.tooltip);
+    const valueContent = (() => {
+      if (row.type === "list") {
+        if (!cell.items || cell.items.length === 0) {
+          return null;
+        }
+        return (
+          <ul className="space-y-1 text-sm leading-relaxed">
+            {cell.items.map((item, idx) => (
+              <li key={idx} className="flex items-start gap-2">
+                <span className="mt-1 h-1.5 w-1.5 rounded-full bg-primary/60" />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        );
+      }
+
+      if (cell.formattedValue) {
+        const text = cell.formattedValue.split("\n").map((part, idx) => (
+          <span key={idx} className="block font-medium">
+            {part}
+          </span>
+        ));
+        return <div className="space-y-1 text-sm leading-relaxed">{text}</div>;
+      }
+
+      return null;
+    })();
+
+    if (!valueContent) {
+      return (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <FileWarning className="h-4 w-4" />
+          Brak danych
+        </div>
+      );
+    }
+
+    if (!hasTooltip) {
+      return valueContent;
+    }
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex items-start gap-2">
+            <div className="flex-1 space-y-1">{valueContent}</div>
+            <Info className="mt-0.5 h-4 w-4 text-muted-foreground" />
+          </div>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs text-sm leading-relaxed">
+          {cell.tooltip}
+        </TooltipContent>
+      </Tooltip>
+    );
   };
 
-  const priceLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.price_comparison),
-    [comparisonAnalysis],
-  );
-  const coverageLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.coverage_comparison),
-    [comparisonAnalysis],
-  );
-  const assistanceLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.assistance_comparison),
-    [comparisonAnalysis],
-  );
-  const exclusionsLookup = useMemo(
-    () => createAnalysisLookup(comparisonAnalysis?.exclusions_diff),
-    [comparisonAnalysis],
-  );
-
-  const priceAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(priceLookup, offer, idx)),
-    [offers, priceLookup],
-  );
-  const coverageAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(coverageLookup, offer, idx)),
-    [offers, coverageLookup],
-  );
-  const assistanceAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(assistanceLookup, offer, idx)),
-    [offers, assistanceLookup],
-  );
-  const exclusionsAnalyses = useMemo(
-    () => offers.map((offer, idx) => getOfferAnalysis(exclusionsLookup, offer, idx)),
-    [offers, exclusionsLookup],
-  );
-
-  const premiums = useMemo(
-    () => offers.map((offer) => getPremium(offer.data)),
-    [offers],
-  );
-  const currencies = useMemo(
-    () => offers.map((offer) => getOfferCurrency(offer)),
-    [offers],
-  );
-  const availablePremiums = premiums.filter((value): value is number => value !== null);
-  const lowestPremium = availablePremiums.length > 0 ? Math.min(...availablePremiums) : null;
-
-  const ocCoverages = useMemo(
-    () => offers.map((offer) => toNumber(offer.data?.coverage?.oc?.sum)),
-    [offers],
-  );
-  const acCoverages = useMemo(
-    () => offers.map((offer) => toNumber(offer.data?.coverage?.ac?.sum)),
-    [offers],
-  );
-
-  const renderAiBlock = (
-    analysis: ComparisonAnalysisOffer | undefined,
-    heading: string,
-    highlight: HighlightTone,
-    emptyMessage = "Brak analizy AI",
-  ) => {
-    const messages = getAiMessages(analysis);
-    const shouldRender = messages.length > 0 || (highlight && highlight !== "neutral");
+  const renderAiBlock = (cell: ComparisonValueCell, row: ComparisonSectionRow) => {
+    const shouldRender =
+      (cell.aiMessages.length > 0 || (cell.highlight && cell.highlight !== "neutral")) &&
+      row.analysisLabel !== undefined;
     if (!shouldRender) {
       return null;
     }
 
+    const highlightLabel = getHighlightLabel(cell.highlight);
+
     return (
-      <div className={cn("rounded-md p-3 text-xs leading-snug space-y-1", getHighlightNoteClass(highlight))}>
+      <div
+        className={cn(
+          "mt-3 space-y-1 rounded-md p-3 text-xs leading-snug",
+          getHighlightNoteClass(cell.highlight),
+        )}
+      >
         <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          {heading}
-          {getHighlightLabel(highlight) && (
-            <Badge variant="outline" className={cn("text-[10px]", getHighlightBadgeClass(highlight))}>
-              {getHighlightLabel(highlight)}
+          {row.analysisLabel ?? "Analiza AI"}
+          {highlightLabel && (
+            <Badge variant="outline" className={cn("text-[10px]", getHighlightBadgeClass(cell.highlight))}>
+              {highlightLabel}
             </Badge>
           )}
         </div>
-        <div className="mt-1 space-y-1 text-sm">
-          {messages.length > 0 ? (
-            messages.map((message, idx) => <p key={idx}>{message}</p>)
+        <div className="space-y-1 text-xs text-foreground">
+          {cell.aiMessages.length > 0 ? (
+            cell.aiMessages.map((message, idx) => <p key={idx}>{message}</p>)
           ) : (
-            <p className="text-muted-foreground text-xs">{emptyMessage}</p>
+            <p className="text-muted-foreground">{row.aiFallbackMessage ?? "Brak analizy AI"}</p>
           )}
         </div>
       </div>
@@ -415,286 +328,98 @@ export function ComparisonTable({ offers, bestOfferIndex, comparisonAnalysis }: 
                 return metrics.delta !== null || metrics.percent !== null;
               }) && (
                 <TableRow>
-                  <TableCell className="font-medium">
-                    <div className="flex items-center gap-2">
-                      <ArrowUp className="w-4 h-4 text-primary" />
-                      Odchylenie od średniej
-                    </div>
-                  </TableCell>
-                  {offers.map((offer, idx) => {
-                    const highlight = priceAnalyses[idx]?.highlight as HighlightTone;
-                    const highlightClass = getHighlightCellClass(highlight);
-                    const metrics = getPriceMetrics(priceAnalyses[idx]);
-                    return (
-                      <TableCell
-                        key={`${offer.id}-delta`}
-                        className={cn(
-                          idx === bestOfferIndex && !highlightClass && "bg-primary/5",
-                          highlightClass,
+                  <TableHead className="w-[240px]">Sekcja</TableHead>
+                  {offers.map((offer, idx) => (
+                    <TableHead key={offer.id} className={cn(idx === bestOfferIndex && "bg-primary/5")}>
+                      <div className="space-y-1">
+                        <div className="font-semibold">{offer.insurer}</div>
+                        {idx === bestOfferIndex && (
+                          <Badge variant="default" className="text-xs">
+                            Rekomendowana
+                          </Badge>
                         )}
-                      >
-                        <div className="space-y-2">
-                          <div className="flex flex-col gap-1">
-                            {metrics.delta !== null && (
-                              <span className="font-medium">
-                                {formatCurrency(metrics.delta, currencies[idx])}
-                              </span>
-                            )}
-                            {metrics.percent !== null && (
-                              <span className="text-xs text-muted-foreground">
-                                {formatPercent(metrics.percent)}
-                              </span>
-                            )}
-                          </div>
-                          {renderAiBlock(priceAnalyses[idx], "Komentarz AI", highlight, "Brak komentarza AI")}
-                        </div>
-                      </TableCell>
-                    );
-                  })}
+                      </div>
+                    </TableHead>
+                  ))}
                 </TableRow>
-              )}
+              </TableHeader>
+              <TableBody>
+                {sections.map((section) => {
+                  const Icon = section.icon ? SECTION_ICON_MAP[section.icon] ?? Shield : Shield;
+                  const open = isSectionOpen(section.id, section.defaultExpanded ?? true);
 
-              <TableRow>
-                <TableCell className="font-medium">
-                  <div className="flex items-center gap-2">
-                    <Shield className="w-4 h-4 text-primary" />
-                    Zakres OC
-                  </div>
-                </TableCell>
-                {offers.map((offer, idx) => {
-                  const ocSum = ocCoverages[idx];
-                  const highlight = coverageAnalyses[idx]?.highlight as HighlightTone;
-                  const highlightClass = getHighlightCellClass(highlight);
                   return (
-                    <TableCell
-                      key={`${offer.id}-oc`}
-                      className={cn(
-                        idx === bestOfferIndex && !highlightClass && "bg-primary/5",
-                        highlightClass,
-                      )}
-                    >
-                      <div className="space-y-2">
-                        <span>
-                          {ocSum !== null
-                            ? `${ocSum.toLocaleString("pl-PL")} PLN`
-                            : "Brak danych"}
-                        </span>
-                        {renderAiBlock(coverageAnalyses[idx], "Analiza AI", highlight)}
-                      </div>
-                    </TableCell>
-                  );
-                })}
-              </TableRow>
-
-              <TableRow>
-                <TableCell className="font-medium">
-                  <div className="flex items-center gap-2">
-                    <Shield className="w-4 h-4 text-primary" />
-                    Zakres AC
-                  </div>
-                </TableCell>
-                {offers.map((offer, idx) => {
-                  const acSum = acCoverages[idx];
-                  const highlight = coverageAnalyses[idx]?.highlight as HighlightTone;
-                  const highlightClass = getHighlightCellClass(highlight);
-                  return (
-                    <TableCell
-                      key={`${offer.id}-ac`}
-                      className={cn(
-                        idx === bestOfferIndex && !highlightClass && "bg-primary/5",
-                        highlightClass,
-                      )}
-                    >
-                      <div className="space-y-2">
-                        <span>
-                          {acSum !== null
-                            ? `${acSum.toLocaleString("pl-PL")} PLN`
-                            : "Brak danych"}
-                        </span>
-                        {renderAiBlock(coverageAnalyses[idx], "Analiza AI", highlight)}
-                      </div>
-                    </TableCell>
-                  );
-                })}
-              </TableRow>
-
-              <TableRow>
-                <TableCell className="font-medium">
-                  <div className="flex items-center gap-2">
-                    <Percent className="w-4 h-4 text-primary" />
-                    Franszyza
-                  </div>
-                </TableCell>
-                {offers.map((offer, idx) => {
-                  const deductible = toNumber(offer.data?.deductible?.amount);
-                  return (
-                    <TableCell
-                      key={`${offer.id}-deductible`}
-                      className={cn(idx === bestOfferIndex && "bg-primary/5")}
-                    >
-                      {deductible !== null
-                        ? `${deductible} ${offer.data?.deductible?.currency || "PLN"}`
-                        : "Brak"}
-                    </TableCell>
-                  );
-                })}
-              </TableRow>
-
-              <TableRow>
-                <TableCell colSpan={offers.length + 1} className="p-0">
-                  <Collapsible
-                    open={expandedRows["assistance"]}
-                    onOpenChange={() => toggleRow("assistance")}
-                  >
-                    <CollapsibleTrigger className="w-full">
-                      <div className="flex items-center gap-2 p-3 transition-colors hover:bg-muted/50">
-                        <Heart className="w-4 h-4 text-primary" />
-                        <span className="font-medium">Assistance</span>
-                        <ChevronDown
-                          className={cn(
-                            "w-4 h-4 ml-auto transition-transform",
-                            expandedRows["assistance"] && "rotate-180",
-                          )}
-                        />
-                      </div>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <div
-                        className="grid"
-                        style={{ gridTemplateColumns: `200px repeat(${offers.length}, 1fr)` }}
-                      >
-                        <div className="p-3"></div>
-                        {offers.map((offer, idx) => {
-                          const assistanceItems = Array.isArray(offer.data?.unified?.assistance)
-                            ? offer.data.unified.assistance
-                            : Array.isArray(offer.data?.assistance)
-                              ? offer.data.assistance
-                              : [];
-                          const analysis = assistanceAnalyses[idx];
-                          const highlight = analysis?.highlight as HighlightTone;
-
-                          return (
-                            <div
-                              key={offer.id}
-                              className={cn(
-                                "p-3 border-t",
-                                idx === bestOfferIndex && !(highlight && highlight !== "neutral") && "bg-primary/5",
-                              )}
-                            >
-                              <div className="space-y-3">
-                                <div>
-                                  <div className="text-xs font-medium uppercase text-muted-foreground">
-                                    Dane z dokumentu
-                                  </div>
-                                  {assistanceItems.length > 0 ? (
-                                    <ul className="mt-2 space-y-1 text-sm">
-                                      {assistanceItems.map((service: any, i: number) => (
-                                        <li key={i} className="flex items-start gap-1">
-                                          <span className="text-primary mt-0.5">•</span>
-                                          <span>{typeof service === "string" ? service : service?.name}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  ) : (
-                                    <span className="text-muted-foreground text-sm">Brak danych</span>
-                                  )}
+                    <Fragment key={section.id}>
+                      <TableRow className="bg-muted/40">
+                        <TableCell colSpan={offers.length + 1} className="p-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleSection(section.id)}
+                            className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted"
+                          >
+                            <Icon className="h-4 w-4 text-primary" />
+                            <div className="flex-1">
+                              <div className="font-semibold">{section.title}</div>
+                              {section.sources.length > 0 && (
+                                <div className="text-xs text-muted-foreground">
+                                  {section.sources.map((source) => source.label).join(" • ")}
                                 </div>
-                                {renderAiBlock(analysis, "Analiza AI", highlight)}
-                              </div>
+                              )}
                             </div>
+                            <Badge
+                              variant="outline"
+                              className={cn("text-[10px] uppercase", DIFF_BADGE_CLASS[section.diffStatus])}
+                            >
+                              {DIFF_BADGE_LABEL[section.diffStatus]}
+                            </Badge>
+                            <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")}
+                            />
+                          </button>
+                        </TableCell>
+                      </TableRow>
+                      {open &&
+                        section.rows.map((row) => {
+                          const RowIcon = row.icon ? ROW_ICON_MAP[row.icon] ?? Shield : Shield;
+                          return (
+                            <TableRow key={row.id}>
+                              <TableCell className={cn("align-top text-sm font-medium", getRowDiffIndicatorClass(row.diffStatus))}>
+                                <div className="flex items-start gap-2">
+                                  <RowIcon className="mt-1 h-4 w-4 text-primary" />
+                                  <span>{row.label}</span>
+                                </div>
+                              </TableCell>
+                              {row.values.map((cell, idx) => {
+                                const highlightClass = getHighlightCellClass(cell.highlight);
+                                const diffClass = highlightClass
+                                  ? "pl-4"
+                                  : getValueCellDiffClass(row.diffStatus);
+                                return (
+                                  <TableCell
+                                    key={`${row.id}-${offers[idx]?.id ?? idx}`}
+                                    className={cn(
+                                      "align-top text-sm",
+                                      diffClass,
+                                      highlightClass,
+                                      idx === bestOfferIndex && !highlightClass && "bg-primary/5",
+                                    )}
+                                  >
+                                    <div className="space-y-3">
+                                      {renderValueContent(cell, row)}
+                                      {renderAiBlock(cell, row)}
+                                    </div>
+                                  </TableCell>
+                                );
+                              })}
+                            </TableRow>
                           );
                         })}
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </TableCell>
-              </TableRow>
-
-              <TableRow>
-                <TableCell colSpan={offers.length + 1} className="p-0">
-                  <Collapsible
-                    open={expandedRows["exclusions"]}
-                    onOpenChange={() => toggleRow("exclusions")}
-                  >
-                    <CollapsibleTrigger className="w-full">
-                      <div className="flex items-center gap-2 p-3 transition-colors hover:bg-muted/50">
-                        <AlertCircle className="w-4 h-4 text-primary" />
-                        <span className="font-medium">Wyłączenia</span>
-                        <ChevronDown
-                          className={cn(
-                            "w-4 h-4 ml-auto transition-transform",
-                            expandedRows["exclusions"] && "rotate-180",
-                          )}
-                        />
-                      </div>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <div
-                        className="grid"
-                        style={{ gridTemplateColumns: `200px repeat(${offers.length}, 1fr)` }}
-                      >
-                        <div className="p-3"></div>
-                        {offers.map((offer, idx) => {
-                          const exclusionsItems = Array.isArray(offer.data?.unified?.exclusions)
-                            ? offer.data.unified.exclusions
-                            : Array.isArray(offer.data?.exclusions)
-                              ? offer.data.exclusions
-                              : [];
-                          const analysis = exclusionsAnalyses[idx];
-                          const highlight = analysis?.highlight as HighlightTone;
-
-                          return (
-                            <div
-                              key={offer.id}
-                              className={cn(
-                                "p-3 border-t",
-                                idx === bestOfferIndex && !(highlight && highlight !== "neutral") && "bg-primary/5",
-                              )}
-                            >
-                              <div className="space-y-3">
-                                <div>
-                                  <div className="text-xs font-medium uppercase text-muted-foreground">
-                                    Dane z dokumentu
-                                  </div>
-                                  {exclusionsItems.length > 0 ? (
-                                    <ul className="mt-2 space-y-1 text-sm">
-                                      {exclusionsItems.map((exclusion: any, i: number) => (
-                                        <li key={i} className="flex items-start gap-1">
-                                          <span className="text-destructive mt-0.5">•</span>
-                                          <span>
-                                            {typeof exclusion === "string"
-                                              ? exclusion
-                                              : exclusion?.name || exclusion?.coverage || "Brak opisu"}
-                                          </span>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  ) : (
-                                    <span className="text-muted-foreground text-sm">Brak informacji</span>
-                                  )}
-                                </div>
-                                {renderAiBlock(
-                                  analysis,
-                                  "Analiza AI",
-                                  highlight,
-                                  "Brak różnic wykrytych przez AI",
-                                ) || (
-                                  <div className="rounded-md border border-muted p-3 text-xs text-muted-foreground">
-                                    Brak analizy AI
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
-        </div>
+                    </Fragment>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </TooltipProvider>
       </CardContent>
     </Card>
   );

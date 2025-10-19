@@ -28,6 +28,11 @@ import {
   type ComparisonOffer,
   type ExtractedOfferData,
 } from "@/lib/comparison-utils";
+import {
+  buildComparisonSections,
+  type ComparisonSection,
+  type ComparisonSourceMetadata,
+} from "@/lib/buildComparisonSections";
 import type { Database } from "@/integrations/supabase/types";
 import { toComparisonAnalysis } from "@/types/comparison";
 
@@ -234,6 +239,11 @@ export default function ComparisonResult() {
     [offers, comparisonAnalysis]
   );
 
+  const sections = useMemo<ComparisonSection[]>(
+    () => buildComparisonSections(offers, comparisonAnalysis, sourceMetadata),
+    [offers, comparisonAnalysis, sourceMetadata]
+  );
+
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
 
   if (loading) {
@@ -366,9 +376,10 @@ export default function ComparisonResult() {
           {/* Tab 2: Detailed Comparison */}
           <TabsContent value="details">
             <ComparisonTable
+              comparisonId={comparison.id}
               offers={offers}
               bestOfferIndex={bestOfferIndex}
-              comparisonAnalysis={comparisonAnalysis}
+              sections={sections}
             />
           </TabsContent>
 
