@@ -12,6 +12,7 @@ import {
   Heart,
   Percent,
   Shield,
+  Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getPremium, type ComparisonOffer } from "@/lib/comparison-utils";
@@ -354,7 +355,13 @@ export function ComparisonTable({ offers, bestOfferIndex, comparisonAnalysis }: 
                     className={cn(idx === bestOfferIndex && "bg-primary/5")}
                   >
                     <div className="space-y-1">
-                      <div className="font-semibold">{offer.insurer}</div>
+                      <div className="font-semibold text-foreground">{offer.label}</div>
+                      {offer.insurer && (
+                        <Badge variant="outline" className="flex items-center gap-1 text-[11px]">
+                          <Building2 className="h-3 w-3" />
+                          {offer.insurer}
+                        </Badge>
+                      )}
                       {idx === bestOfferIndex && (
                         <Badge variant="default" className="text-xs">
                           Rekomendowana

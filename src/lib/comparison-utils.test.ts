@@ -9,13 +9,18 @@ describe("analyzeBestOffers", () => {
     options: Partial<ComparisonOffer> = {}
   ): ComparisonOffer => ({
     id,
-    insurer: `Offer ${id}`,
+    label: options.label ?? `Oferta ${id}`,
+    insurer: options.insurer ?? `Offer ${id}`,
     data: {
       premium: { total: premium },
       coverage: { oc: { sum: 50000 } },
       unified: { offer_id: options.calculationId ?? null, total_premium_after_discounts: premium },
     },
     calculationId: options.calculationId ?? null,
+    detectedProductType: options.detectedProductType ?? null,
+    fileName: options.fileName,
+    previewUrl: options.previewUrl,
+    downloadUrl: options.downloadUrl,
   });
 
   it("aligns AI highlights using calculation identifiers when order differs", () => {
