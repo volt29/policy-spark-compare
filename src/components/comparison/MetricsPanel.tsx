@@ -1,11 +1,22 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { DollarSign, FileText, Shield, TrendingDown } from "lucide-react";
+import { DollarSign, FileText, Shield, TrendingDown, type LucideIcon } from "lucide-react";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
+import { SourceTooltip, cn } from "@/lib/utils";
 import type { SourceReference } from "@/types/comparison";
+
+type MetricKey = "offerCount" | "lowestPremium" | "highestCoverage" | "averagePremium";
+
+type MetricDefinition = {
+  key: MetricKey;
+  label: string;
+  value: string;
+  icon: LucideIcon;
+  color: string;
+};
 
 interface MetricsPanelProps {
   offers: ComparisonOffer[];
-  sourceReferences?: Partial<Record<string, SourceReference | SourceReference[] | null>>;
+  sourceReferences?: Record<MetricKey, SourceReference[] | SourceReference | null>;
 }
 
 export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {
@@ -29,7 +40,7 @@ export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {
   const avgPremium = premiums.length > 0 ? premiums.reduce((a, b) => a + b, 0) / premiums.length : 0;
   const highestCoverage = coverages.length > 0 ? Math.max(...coverages) : 0;
 
-  const metrics = [
+  const metrics: MetricDefinition[] = [
     {
       key: "offerCount" as const,
       label: "Liczba ofert",
@@ -60,11 +71,15 @@ export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {
     },
   ];
 
+  const hasSourceReferences = Boolean(
+    sourceReferences && typeof sourceReferences === "object" && Object.keys(sourceReferences).length > 0,
+  );
+
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
       {metrics.map((metric, idx) => {
         const Icon = metric.icon;
-        const reference = sourceReferences?.[metric.key];
+        const reference = hasSourceReferences ? sourceReferences?.[metric.key] ?? null : null;
         return (
           <Card key={idx}>
             <CardContent className="p-6">
@@ -85,8 +100,4 @@ export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {
       })}
     </div>
   );
-}
-
-function cn(...inputs: any[]) {
-  return inputs.filter(Boolean).join(' ');
 }
