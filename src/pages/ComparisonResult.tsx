@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -8,7 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ArrowLeft,
   ArrowRight,
+  CheckCircle,
   Download,
+  Eye,
   Loader2,
   Sparkles,
   BarChart3,
@@ -18,7 +20,7 @@ import {
   Layers,
 } from "lucide-react";
 import { toast } from "sonner";
-import { OfferCard } from "@/components/comparison/OfferCard";
+import { OfferCard, type OfferCardAction } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
 import { SectionComparisonView } from "@/components/comparison/SectionComparisonView";
@@ -32,21 +34,102 @@ import {
   type ComparisonOffer,
   type ExtractedOfferData,
 } from "@/lib/comparison-utils";
+import {
+  buildComparisonSections,
+  type ComparisonSection,
+  type ComparisonSourceMetadata,
+} from "@/lib/buildComparisonSections";
 import type { Database } from "@/integrations/supabase/types";
 import { toComparisonAnalysis, type SourceReference } from "@/types/comparison";
 
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
 
-const toNumber = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
+const DOCUMENTS_BUCKET = "documents";
+
+const normalizeString = (value: unknown): string | null => {
   if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
   }
   return null;
+};
+
+const detectProductType = (data: ExtractedOfferData | null): string | null => {
+  if (!data) return null;
+
+  const unifiedRecord = data.unified && typeof data.unified === "object"
+    ? (data.unified as Record<string, unknown>)
+    : null;
+
+  const candidates: Array<unknown> = [
+    (data as Record<string, unknown> | null)?.product_type,
+    (data as Record<string, unknown> | null)?.detected_product_type,
+    unifiedRecord?.product_type,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeString(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const getDocumentPublicUrl = (filePath: string | null | undefined): string | null => {
+  if (!filePath) return null;
+  try {
+    const { data } = supabase.storage.from(DOCUMENTS_BUCKET).getPublicUrl(filePath);
+    return data?.publicUrl ?? null;
+  } catch (error) {
+    console.warn("Nie udało się zbudować adresu URL dokumentu", error);
+    return null;
+  }
+};
+
+const createDownloadUrl = (url: string | null | undefined): string | null => {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("download", "1");
+    return parsed.toString();
+  } catch (error) {
+    console.warn("Nie udało się zbudować adresu pobierania", error);
+    return url;
+  }
+};
+
+const openInNewTab = (url: string | null | undefined): boolean => {
+  if (!url || typeof window === "undefined") {
+    return false;
+  }
+
+  const newWindow = window.open(url, "_blank", "noopener,noreferrer");
+  return !!newWindow;
+};
+
+const mapDocumentsToOffers = (documents: DocumentRow[]): ComparisonOffer[] => {
+  return documents.map((doc, idx) => {
+    const extracted = (doc.extracted_data ?? null) as ExtractedOfferData | null;
+    const label = `Oferta ${idx + 1}`;
+    const insurer = normalizeString(extracted?.insurer);
+    const calculationId = extractCalculationId(extracted);
+    const previewUrl = getDocumentPublicUrl(doc.file_path);
+
+    return {
+      id: doc.id,
+      label,
+      insurer,
+      data: extracted,
+      calculationId,
+      detectedProductType: detectProductType(extracted),
+      fileName: doc.file_name,
+      previewUrl,
+      downloadUrl: createDownloadUrl(previewUrl),
+    } satisfies ComparisonOffer;
+  });
 };
 
 export default function ComparisonResult() {
@@ -57,6 +140,59 @@ export default function ComparisonResult() {
   const [comparison, setComparison] = useState<ComparisonRow | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
+
+  const buildOfferActions = useCallback(
+    (offer: ComparisonOffer, isSelected: boolean): OfferCardAction[] => {
+      const notifyUnavailable = (message: string) => {
+        toast.info(message, {
+          description: offer.fileName ? `Plik: ${offer.fileName}` : undefined,
+        });
+      };
+
+      const previewHandler = () => {
+        if (!openInNewTab(offer.previewUrl)) {
+          notifyUnavailable("Podgląd dokumentu jest niedostępny");
+        }
+      };
+
+      const downloadHandler = () => {
+        const targetUrl = offer.downloadUrl ?? offer.previewUrl;
+        if (!openInNewTab(targetUrl)) {
+          notifyUnavailable("Nie udało się rozpocząć pobierania");
+        }
+      };
+
+      return [
+        {
+          key: "preview",
+          label: "Podgląd",
+          icon: Eye,
+          variant: "outline",
+          disabled: !offer.previewUrl,
+          onClick: previewHandler,
+        },
+        {
+          key: "download",
+          label: "Pobierz",
+          icon: Download,
+          variant: "outline",
+          disabled: !(offer.downloadUrl ?? offer.previewUrl),
+          onClick: downloadHandler,
+        },
+        {
+          key: "select",
+          label: isSelected ? "Wybrano" : "Wybierz ofertę",
+          icon: CheckCircle,
+          variant: isSelected ? "default" : "secondary",
+          active: isSelected,
+          onClick: () => {
+            setSelectedOfferId((current) => (current === offer.id ? null : offer.id));
+          },
+        },
+      ];
+    },
+    [setSelectedOfferId]
+  );
 
   useEffect(() => {
     if (!user) {
@@ -102,104 +238,17 @@ export default function ComparisonResult() {
     [comparison]
   );
 
-  const offers = useMemo<ComparisonOffer[]>(() => {
-    return documents.map((doc, idx) => {
-      const extracted = (doc.extracted_data ?? null) as ExtractedOfferData | null;
-      const insurerName =
-        typeof extracted?.insurer === "string" && extracted.insurer.trim().length > 0
-          ? extracted.insurer
-          : `Oferta ${idx + 1}`;
-
-      return {
-        id: doc.id,
-        insurer: insurerName,
-        data: extracted,
-        calculationId: extractCalculationId(extracted),
-      } satisfies ComparisonOffer;
-    });
-  }, [documents]);
+  const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
 
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis),
     [offers, comparisonAnalysis]
   );
 
-  const priceAnalyses = useMemo(() => {
-    const lookup = createAnalysisLookup(comparisonAnalysis?.price_comparison);
-    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
-  }, [comparisonAnalysis?.price_comparison, offers]);
-
-  const coverageAnalyses = useMemo(() => {
-    const lookup = createAnalysisLookup(comparisonAnalysis?.coverage_comparison);
-    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
-  }, [comparisonAnalysis?.coverage_comparison, offers]);
-
-  const assistanceAnalyses = useMemo(() => {
-    const lookup = createAnalysisLookup(comparisonAnalysis?.assistance_comparison);
-    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
-  }, [comparisonAnalysis?.assistance_comparison, offers]);
-
-  const exclusionsAnalyses = useMemo(() => {
-    const lookup = createAnalysisLookup(comparisonAnalysis?.exclusions_diff);
-    return offers.map((offer, idx) => findOfferAnalysis(lookup, offer, idx));
-  }, [comparisonAnalysis?.exclusions_diff, offers]);
-
-  const offerAnalyses = useMemo(
-    () =>
-      offers.map((_, idx) => ({
-        price: priceAnalyses[idx],
-        coverage: coverageAnalyses[idx],
-        assistance: assistanceAnalyses[idx],
-        exclusions: exclusionsAnalyses[idx],
-      })),
-    [offers, priceAnalyses, coverageAnalyses, assistanceAnalyses, exclusionsAnalyses],
+  const sections = useMemo<ComparisonSection[]>(
+    () => buildComparisonSections(offers, comparisonAnalysis, sourceMetadata),
+    [offers, comparisonAnalysis, sourceMetadata]
   );
-
-  const premiumNumbers = useMemo(() => offers.map((offer) => getPremium(offer.data)), [offers]);
-
-  const lowestPremiumIndex = useMemo(() => {
-    let index = -1;
-    premiumNumbers.forEach((value, idx) => {
-      if (value !== null && (index === -1 || (premiumNumbers[index] ?? Infinity) > value)) {
-        index = idx;
-      }
-    });
-    return index;
-  }, [premiumNumbers]);
-
-  const coverageNumbers = useMemo(
-    () => offers.map((offer) => toNumber(offer.data?.coverage?.oc?.sum)),
-    [offers],
-  );
-
-  const highestCoverageIndex = useMemo(() => {
-    let index = -1;
-    coverageNumbers.forEach((value, idx) => {
-      if (value !== null && (index === -1 || (coverageNumbers[index] ?? -Infinity) < value)) {
-        index = idx;
-      }
-    });
-    return index;
-  }, [coverageNumbers]);
-
-  const metricsSourceReferences = useMemo(() => {
-    const references: Partial<
-      Record<
-        "offerCount" | "lowestPremium" | "highestCoverage" | "averagePremium",
-        SourceReference | SourceReference[] | null
-      >
-    > = {};
-
-    if (lowestPremiumIndex !== -1) {
-      references.lowestPremium = priceAnalyses[lowestPremiumIndex]?.sources ?? null;
-    }
-
-    if (highestCoverageIndex !== -1) {
-      references.highestCoverage = coverageAnalyses[highestCoverageIndex]?.sources ?? null;
-    }
-
-    return references;
-  }, [lowestPremiumIndex, priceAnalyses, highestCoverageIndex, coverageAnalyses]);
 
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
 
@@ -231,13 +280,22 @@ export default function ComparisonResult() {
 
   const summaryData = comparisonAnalysis.summary ?? null;
   const recommendedOffer = summaryData?.recommended_offer ?? null;
+  const recommendedOfferInsurerName = recommendedOffer?.insurer ?? null;
+  const recommendedOfferMatch = recommendedOfferInsurerName
+    ? offers.find(
+        (offer) =>
+          offer.insurer && offer.insurer.toLowerCase() === recommendedOfferInsurerName.toLowerCase(),
+      )
+    : null;
   const keyNumbers = recommendedOffer?.key_numbers ?? [];
-  const recommendedOfferTitle = recommendedOffer?.name ?? recommendedOffer?.insurer ?? null;
+  const recommendedOfferTitle =
+    recommendedOffer?.name ??
+    recommendedOfferMatch?.label ??
+    recommendedOfferInsurerName ??
+    null;
   const recommendedOfferInsurer =
-    recommendedOffer?.name &&
-    recommendedOffer?.insurer &&
-    recommendedOffer.insurer !== recommendedOffer.name
-      ? recommendedOffer.insurer
+    recommendedOfferInsurerName && recommendedOfferInsurerName !== recommendedOfferTitle
+      ? recommendedOfferMatch?.insurer ?? recommendedOfferInsurerName
       : null;
   const fallbackSummaryText =
     summaryData?.fallback_text ??
@@ -257,7 +315,7 @@ export default function ComparisonResult() {
     if (!selectedOffer) return;
     localStorage.setItem(`comparison_${id}_selected`, selectedOfferId!);
     toast.success("Oferta została zapisana!", {
-      description: `Wybrano: ${selectedOffer.insurer}`
+      description: `Wybrano: ${selectedOffer.insurer ?? selectedOffer.label}`
     });
   };
 
@@ -306,39 +364,32 @@ export default function ComparisonResult() {
           {/* Tab 1: Offer Overview */}
           <TabsContent value="overview" className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {offers.map((offer, idx) => (
+              {offers.map((offer) => {
+                const isSelected = selectedOfferId === offer.id;
+                const actions = buildOfferActions(offer, isSelected);
+                return (
                 <OfferCard
                   key={offer.id}
                   offer={offer}
+                  label={offer.label}
+                  detectedProductType={offer.detectedProductType}
                   badges={badges.get(offer.id) || []}
-                  isSelected={selectedOfferId === offer.id}
-                  analysis={offerAnalyses[idx]}
-                  onSelect={() => setSelectedOfferId(offer.id === selectedOfferId ? null : offer.id)}
+                  isSelected={isSelected}
+                  onSelect={() => setSelectedOfferId((current) => (current === offer.id ? null : offer.id))}
+                  actions={actions}
                 />
-              ))}
+                );
+              })}
             </div>
           </TabsContent>
 
           {/* Tab 2: Detailed Comparison */}
           <TabsContent value="details">
             <ComparisonTable
+              comparisonId={comparison.id}
               offers={offers}
               bestOfferIndex={bestOfferIndex}
-              comparisonAnalysis={comparisonAnalysis}
-              priceAnalyses={priceAnalyses}
-              coverageAnalyses={coverageAnalyses}
-              assistanceAnalyses={assistanceAnalyses}
-              exclusionsAnalyses={exclusionsAnalyses}
-            />
-          </TabsContent>
-
-          <TabsContent value="sections">
-            <SectionComparisonView
-              offers={offers}
-              priceAnalyses={priceAnalyses}
-              coverageAnalyses={coverageAnalyses}
-              assistanceAnalyses={assistanceAnalyses}
-              exclusionsAnalyses={exclusionsAnalyses}
+              sections={sections}
             />
           </TabsContent>
 
@@ -530,7 +581,10 @@ export default function ComparisonResult() {
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-lg truncate">
-                  Wybrana oferta: {selectedOffer.insurer}
+                  Wybrana oferta: {selectedOffer.label}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {selectedOffer.insurer && `Ubezpieczyciel: ${selectedOffer.insurer}`}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {selectedOffer.calculationId && `ID kalkulacji: ${selectedOffer.calculationId}`}

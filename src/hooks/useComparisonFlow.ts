@@ -30,7 +30,7 @@ export type AddFilesResult =
   | { status: "error"; message: string; description?: string };
 
 export type StartComparisonResult =
-  | { status: "success"; comparisonId: string }
+  | { status: "success"; comparisonId: string; detectedProductType: string | null }
   | { status: "validation-error"; message: string }
   | { status: "auth-required" }
   | { status: "error"; message: string }
@@ -45,10 +45,9 @@ export interface ComparisonFlowRunner {
   runComparisonFlow: (params: {
     userId: string;
     files: File[];
-    productType: string;
     onStageChange?: (stage: ComparisonStage) => void;
     signal?: AbortSignal;
-  }) => Promise<{ comparisonId: string; documentIds: string[] }>;
+  }) => Promise<{ comparisonId: string; documentIds: string[]; detectedProductType: string | null }>;
 }
 
 export function validateFileSelection(
@@ -109,14 +108,12 @@ export async function executeComparisonRun({
   runner,
   userId,
   files,
-  productType,
   controller,
   onStageChange,
 }: {
   runner: ComparisonFlowRunner;
   userId: string;
   files: File[];
-  productType: string;
   controller: AbortController;
   onStageChange?: (stage: ComparisonStage) => void;
 }): Promise<StartComparisonResult> {
@@ -124,12 +121,15 @@ export async function executeComparisonRun({
     const result = await runner.runComparisonFlow({
       userId,
       files,
-      productType: productType.trim() || "OC/AC",
       signal: controller.signal,
       onStageChange,
     });
 
-    return { status: "success", comparisonId: result.comparisonId };
+    return {
+      status: "success",
+      comparisonId: result.comparisonId,
+      detectedProductType: result.detectedProductType,
+    };
   } catch (error) {
     if (controller.signal.aborted) {
       return { status: "aborted" };
@@ -193,7 +193,7 @@ export function useComparisonFlow({
   }, []);
 
   const startComparison = useCallback(
-    async (productType: string): Promise<StartComparisonResult> => {
+    async (): Promise<StartComparisonResult> => {
       const precheck = validateStartConditions(userId, files);
       if (precheck) {
         return precheck;
@@ -213,7 +213,6 @@ export function useComparisonFlow({
           runner,
           userId,
           files,
-          productType,
           controller,
           onStageChange: (stage) => {
             if (!isMountedRef.current) {

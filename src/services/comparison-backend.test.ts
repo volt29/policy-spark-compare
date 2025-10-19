@@ -119,6 +119,34 @@ function createSupabaseStub(options: SupabaseStubOptions = {}) {
               },
             };
           },
+          select() {
+            return {
+              eq(_column: string, id: string) {
+                return {
+                  async single() {
+                    if (options.createComparisonError) {
+                      return { data: null, error: { message: options.createComparisonError } };
+                    }
+                    return {
+                      data: {
+                        id: id ?? options.comparisonId ?? "comparison-1",
+                        created_at: new Date().toISOString(),
+                        status: "completed",
+                        document_ids: [],
+                        user_id: "user-1",
+                        product_type: "OC/AC",
+                        client_id: null,
+                        comparison_data: null,
+                        report_url: null,
+                        summary_text: null,
+                      },
+                      error: null,
+                    };
+                  },
+                };
+              },
+            };
+          },
         } as any;
       }
 
@@ -167,6 +195,9 @@ describe("createSupabaseComparisonBackend", () => {
       status: "processing",
     } as any);
     expect(comparison.id).toBe("comparison-1");
+
+    const fetchedComparison = await backend.getComparison("comparison-1");
+    expect(fetchedComparison.product_type).toBe("OC/AC");
   });
 
   it("throws descriptive errors when supabase responses contain errors", async () => {
@@ -197,5 +228,7 @@ describe("createSupabaseComparisonBackend", () => {
     await expect(
       backend.createComparison({ user_id: "user", document_ids: ["doc-0"] } as any)
     ).rejects.toThrow("comparison failed");
+
+    await expect(backend.getComparison("comparison-1")).rejects.toThrow("comparison failed");
   });
 });

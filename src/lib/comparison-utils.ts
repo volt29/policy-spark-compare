@@ -40,9 +40,14 @@ export interface ExtractedOfferData {
 
 export interface ComparisonOffer {
   id: string;
-  insurer: string;
+  label: string;
+  insurer: string | null;
   data: ExtractedOfferData | null;
   calculationId?: string | null;
+  detectedProductType?: string | null;
+  fileName?: string | null;
+  previewUrl?: string | null;
+  downloadUrl?: string | null;
 }
 
 export interface OfferBadges {
