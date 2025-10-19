@@ -689,20 +689,37 @@ export default function ComparisonResult() {
           {/* Tab 1: Offer Overview */}
           <TabsContent value="overview" className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {offers.map((offer) => {
+              {offers.map((offer, index) => {
                 const isSelected = selectedOfferId === offer.id;
                 const actions = buildOfferActions(offer, isSelected);
+                const priceSources = priceAnalyses[index]?.sources ?? null;
+                const coverageSources = coverageAnalyses[index]?.sources ?? null;
+                const assistanceSources = assistanceAnalyses[index]?.sources ?? null;
+                const hasAnalysis = Boolean(
+                  (priceSources && priceSources.length > 0) ||
+                    (coverageSources && coverageSources.length > 0) ||
+                    (assistanceSources && assistanceSources.length > 0)
+                );
+                const analysis = hasAnalysis
+                  ? {
+                      price: priceSources ? { sources: priceSources } : undefined,
+                      coverage: coverageSources ? { sources: coverageSources } : undefined,
+                      assistance: assistanceSources ? { sources: assistanceSources } : undefined,
+                    }
+                  : undefined;
+
                 return (
-                <OfferCard
-                  key={offer.id}
-                  offer={offer}
-                  label={offer.label}
-                  detectedProductType={offer.detectedProductType}
-                  badges={badges.get(offer.id) || []}
-                  isSelected={isSelected}
-                  onSelect={() => setSelectedOfferId((current) => (current === offer.id ? null : offer.id))}
-                  actions={actions}
-                />
+                  <OfferCard
+                    key={offer.id}
+                    offer={offer}
+                    label={offer.label}
+                    detectedProductType={offer.detectedProductType}
+                    badges={badges.get(offer.id) || []}
+                    isSelected={isSelected}
+                    onSelect={() => setSelectedOfferId((current) => (current === offer.id ? null : offer.id))}
+                    actions={actions}
+                    analysis={analysis}
+                  />
                 );
               })}
             </div>
