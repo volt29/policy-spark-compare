@@ -203,6 +203,78 @@ function mergeExtractedData(base: any, addition: any) {
   return result;
 }
 
+function normalizeProductTypeValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (value && typeof value === 'object') {
+    const possibleKeys = ['value', 'label', 'name', 'type'];
+    for (const key of possibleKeys) {
+      const candidate = (value as Record<string, unknown>)[key];
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (trimmed.length > 0) {
+          return trimmed;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function mergeEntriesByKey(
+  existing: unknown,
+  incoming: Array<Record<string, unknown>>,
+  key: string | string[]
+) {
+  const keys = Array.isArray(key) ? key : [key];
+
+  const resolveIdentifier = (item: Record<string, unknown>) => {
+    for (const candidate of keys) {
+      const identifier = item[candidate];
+      if (identifier !== undefined && identifier !== null && identifier !== '') {
+        return String(identifier);
+      }
+    }
+    return null;
+  };
+
+  const baseArray = Array.isArray(existing)
+    ? existing.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>>
+    : [];
+
+  const merged = new Map<string, Record<string, unknown>>();
+
+  for (const item of baseArray) {
+    const identifier = resolveIdentifier(item);
+    if (!identifier) {
+      merged.set(`__idx_${merged.size}`, { ...item });
+    } else {
+      merged.set(identifier, { ...item });
+    }
+  }
+
+  for (const item of incoming) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+
+    const identifier = resolveIdentifier(item);
+    if (!identifier) {
+      merged.set(`__incoming_${merged.size}`, { ...item });
+      continue;
+    }
+
+    const existingEntry = merged.get(identifier) ?? {};
+    merged.set(identifier, { ...existingEntry, ...item });
+  }
+
+  return Array.from(merged.values());
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -920,8 +992,25 @@ serve(async (req) => {
       finalData.unified = unifiedOffer;
       finalData.diagnostics = diagnostics;
 
+      const normalizedProductType = normalizeProductTypeValue(finalData.product_type);
+      finalData.product_type = normalizedProductType;
+
+      if (finalData.resolved && typeof finalData.resolved === 'object') {
+        finalData.resolved = {
+          ...finalData.resolved,
+          product_type: normalizedProductType
+        };
+      }
+
+      if (Array.isArray(finalData.documents)) {
+        finalData.documents = finalData.documents.map((doc: any) => ({
+          ...doc,
+          product_type: normalizeProductTypeValue(doc?.product_type ?? normalizedProductType)
+        }));
+      }
+
       console.log('✅ Step 22: Updating document with extracted data...');
-    
+
     // Update document with extracted data
     const { error: updateError } = await supabase
       .from('documents')
