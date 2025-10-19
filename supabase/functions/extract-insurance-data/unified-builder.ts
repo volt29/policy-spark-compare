@@ -59,6 +59,14 @@ export interface UnifiedOffer {
     name: string;
     coverage: string;
     limits: string;
+    response_time: string;
+    contact: string;
+    exclusions: string[];
+  }>;
+  exclusions: Array<{
+    name: string;
+    description: string;
+    keywords: string[];
   }>;
   duration: {
     start: string;
@@ -107,6 +115,9 @@ export function buildUnifiedOffer(
   
   // Build assistance array
   const assistance = buildAssistanceArray(sections, aiExtractedData);
+
+  // Extract exclusions
+  const exclusions = buildExclusions(sections, aiExtractedData);
   
   // Extract duration
   const duration = extractDuration(sections, aiExtractedData);
@@ -130,6 +141,7 @@ export function buildUnifiedOffer(
     total_premium_before_discounts: beforeDiscounts,
     total_premium_after_discounts: afterDiscounts,
     assistance,
+    exclusions,
     duration,
     notes,
     missing_fields: missingFields,
@@ -315,21 +327,126 @@ function buildAssistanceArray(
   sections: ParsedSection[],
   aiData: any
 ): UnifiedOffer['assistance'] {
+  const assistanceSections = sections.filter(section => section.type === 'assistance');
+  const fallbackLimits = assistanceSections.flatMap(section =>
+    section.content.match(/limit[^\n]+/gi) ?? []
+  );
+
   if (aiData?.assistance && Array.isArray(aiData.assistance)) {
-    // Check if already in new format
-    if (aiData.assistance.length > 0 && typeof aiData.assistance[0] === 'object' && aiData.assistance[0].name) {
-      return aiData.assistance;
+    const normalized = aiData.assistance.map((service: any, index: number) => {
+      if (typeof service === 'string') {
+        return {
+          name: service,
+          coverage: 'opis niedostępny',
+          limits: fallbackLimits[index] || 'brak danych',
+          response_time: 'brak danych',
+          contact: 'brak danych',
+          exclusions: []
+        };
+      }
+
+      const exclusions = Array.isArray(service.exclusions)
+        ? service.exclusions.map((item: any) => String(item))
+        : service.exclusions
+          ? [String(service.exclusions)]
+          : [];
+
+      return {
+        name: service.name || service.title || `Usługa assistance ${index + 1}`,
+        coverage: service.coverage || service.description || 'brak danych',
+        limits: service.limits || service.limit || fallbackLimits[index] || 'brak danych',
+        response_time: service.response_time || service.response || 'brak danych',
+        contact: service.contact || service.hotline || service.phone || 'brak danych',
+        exclusions
+      };
+    });
+
+    const uniqueByName = new Map<string, UnifiedOffer['assistance'][number]>();
+    for (const item of normalized) {
+      if (!uniqueByName.has(item.name)) {
+        uniqueByName.set(item.name, item);
+      }
     }
-    
-    // Convert from old format (array of strings)
-    return aiData.assistance.map((service: string) => ({
-      name: service,
-      coverage: '24/7',
-      limits: 'standardowe'
-    }));
+
+    const assistanceArray = Array.from(uniqueByName.values());
+    if (assistanceArray.length > 0) {
+      return assistanceArray;
+    }
   }
-  
+
+  if (assistanceSections.length > 0) {
+    return assistanceSections.map((section, index) => {
+      const firstLine = section.content.split('\n')[0]?.trim() || `Usługa assistance ${index + 1}`;
+      return {
+        name: firstLine,
+        coverage: section.content.slice(0, 180),
+        limits: fallbackLimits[index] || 'brak danych',
+        response_time: 'brak danych',
+        contact: 'brak danych',
+        exclusions: []
+      };
+    });
+  }
+
   return [];
+}
+
+function buildExclusions(sections: ParsedSection[], aiData: any): UnifiedOffer['exclusions'] {
+  const exclusions: UnifiedOffer['exclusions'] = [];
+  const seen = new Set<string>();
+
+  if (Array.isArray(aiData?.exclusions)) {
+    for (const exclusion of aiData.exclusions) {
+      if (typeof exclusion === 'string') {
+        const key = exclusion.trim();
+        if (!seen.has(key)) {
+          seen.add(key);
+          exclusions.push({
+            name: key.slice(0, 80),
+            description: key,
+            keywords: []
+          });
+        }
+      } else if (exclusion && typeof exclusion === 'object') {
+        const name = exclusion.name || exclusion.title || 'Wyłączenie odpowiedzialności';
+        const description = exclusion.description || exclusion.detail || 'brak szczegółów';
+        const key = `${name}-${description}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          exclusions.push({
+            name,
+            description,
+            keywords: Array.isArray(exclusion.keywords) ? exclusion.keywords : []
+          });
+        }
+      }
+    }
+  }
+
+  const exclusionSections = sections.filter(section =>
+    section.content.toLowerCase().includes('wyłącze') ||
+    section.content.toLowerCase().includes('nie obejmuje') ||
+    section.content.toLowerCase().includes('nie dotyczy')
+  );
+
+  for (const section of exclusionSections) {
+    const sentences = section.content.split(/\n|\.\s/).map(sentence => sentence.trim()).filter(Boolean);
+    for (const sentence of sentences) {
+      const normalized = sentence.toLowerCase();
+      if (normalized.includes('wyłącze') || normalized.includes('nie obejmuje') || normalized.includes('nie dotyczy')) {
+        if (!seen.has(sentence)) {
+          seen.add(sentence);
+          exclusions.push({
+            name: sentence.slice(0, 80) || 'Wyłączenie',
+            description: sentence,
+            keywords: section.keywords
+          });
+        }
+      }
+    }
+  }
+
+  return exclusions;
 }
 
 function extractDuration(sections: ParsedSection[], aiData: any): UnifiedOffer['duration'] {
