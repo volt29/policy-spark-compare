@@ -185,7 +185,11 @@ export default function ComparisonResult() {
 
           {/* Tab 2: Detailed Comparison */}
           <TabsContent value="details">
-            <ComparisonTable offers={offers} bestOfferIndex={bestOfferIndex} />
+            <ComparisonTable
+              offers={offers}
+              bestOfferIndex={bestOfferIndex}
+              comparisonAnalysis={comparisonAnalysis}
+            />
           </TabsContent>
 
           {/* Tab 3: AI Analysis */}
