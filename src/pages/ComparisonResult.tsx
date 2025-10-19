@@ -245,6 +245,16 @@ export default function ComparisonResult() {
 
   const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
 
+  const labeledOffers = useMemo(
+    () =>
+      offers.map((offer) => ({
+        id: offer.id,
+        label: offer.insurer,
+        insurer: offer.insurer,
+      })),
+    [offers],
+  );
+
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis),
     [offers, comparisonAnalysis]
@@ -379,15 +389,6 @@ export default function ComparisonResult() {
     summaryData?.fallback_text ??
     summaryData?.raw_text ??
     (typeof comparison.summary_text === "string" ? comparison.summary_text : null);
-  const hasStructuredSummary =
-    !!summaryData &&
-    (Boolean(
-      recommendedOffer &&
-        (recommendedOfferTitle || recommendedOffer.summary || keyNumbers.length > 0)
-    ) ||
-      (summaryData.reasons?.length ?? 0) > 0 ||
-      (summaryData.risks?.length ?? 0) > 0 ||
-      (summaryData.next_steps?.length ?? 0) > 0);
 
   const handleConfirmSelection = () => {
     if (!selectedOffer) return;

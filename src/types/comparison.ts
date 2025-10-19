@@ -140,6 +140,7 @@ export interface ComparisonSummary {
   reasons?: string[] | null;
   risks?: string[] | null;
   next_steps?: string[] | null;
+  sources_map?: Record<string, unknown> | null;
   fallback_text?: string | null;
   raw_text?: string | null;
   parse_error?: boolean | null;
@@ -341,6 +342,27 @@ export function toComparisonAnalysis(
     const nextSteps = parseStringArray(record.next_steps);
     if (nextSteps) {
       summary.next_steps = nextSteps;
+    }
+
+    const sourcesValue = record.sources_map ?? record.sources ?? record.citations;
+    if (sourcesValue && typeof sourcesValue === "object") {
+      if (Array.isArray(sourcesValue)) {
+        const entries = sourcesValue
+          .map((entry, index) => {
+            if (!entry || typeof entry !== "object") {
+              return null;
+            }
+            const key = String(index + 1);
+            return [key, entry as Record<string, unknown>];
+          })
+          .filter((entry): entry is [string, Record<string, unknown>] => entry !== null);
+
+        if (entries.length > 0) {
+          summary.sources_map = Object.fromEntries(entries);
+        }
+      } else {
+        summary.sources_map = sourcesValue as Record<string, unknown>;
+      }
     }
 
     if (typeof record.fallback_text === "string" && record.fallback_text.trim().length > 0) {
