@@ -1,7 +1,7 @@
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Shield, Heart, Calendar, TrendingDown, Star, AlertTriangle } from "lucide-react";
+import { Shield, Heart, Calendar, TrendingDown, Star, AlertTriangle, Eye, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface OfferCardProps {
@@ -14,9 +14,18 @@ interface OfferCardProps {
   badges?: Array<'lowest-price' | 'highest-coverage' | 'recommended' | 'warning'>;
   isSelected?: boolean;
   onSelect?: () => void;
+  onPreview?: () => void;
+  onDownload?: () => void;
 }
 
-export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCardProps) {
+export function OfferCard({
+  offer,
+  badges = [],
+  isSelected,
+  onSelect,
+  onPreview,
+  onDownload,
+}: OfferCardProps) {
   // Support both old and new unified format
   const unified = offer.data?.unified;
   
@@ -126,8 +135,8 @@ export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCar
       </CardContent>
 
       <CardFooter className="flex flex-col gap-2">
-        <Button 
-          className="w-full" 
+        <Button
+          className="w-full"
           variant={isSelected ? "default" : "outline"}
           onClick={(e) => {
             e.stopPropagation();
@@ -136,6 +145,32 @@ export function OfferCard({ offer, badges = [], isSelected, onSelect }: OfferCar
         >
           {isSelected ? "Wybrano" : "Wybierz ofertę"}
         </Button>
+        {(onPreview || onDownload) && (
+          <div className="flex w-full gap-2">
+            <Button
+              className="flex-1"
+              variant="outline"
+              disabled={!onPreview}
+              onClick={(event) => {
+                event.stopPropagation();
+                onPreview?.();
+              }}
+            >
+              <Eye className="mr-2 h-4 w-4" /> Podgląd
+            </Button>
+            <Button
+              className="flex-1"
+              variant="ghost"
+              disabled={!onDownload}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDownload?.();
+              }}
+            >
+              <Download className="mr-2 h-4 w-4" /> Pobierz
+            </Button>
+          </div>
+        )}
         {offer.calculationId && (
           <div className="text-xs text-muted-foreground text-center">
             ID: {offer.calculationId}
