@@ -26,6 +26,11 @@ import {
   type ComparisonOffer,
   type ExtractedOfferData,
 } from "@/lib/comparison-utils";
+import {
+  buildComparisonSections,
+  type ComparisonSection,
+  type ComparisonSourceMetadata,
+} from "@/lib/buildComparisonSections";
 import type { Database } from "@/integrations/supabase/types";
 import { toComparisonAnalysis } from "@/types/comparison";
 
@@ -85,6 +90,27 @@ export default function ComparisonResult() {
     [comparison]
   );
 
+  const sourceMetadata = useMemo<ComparisonSourceMetadata | null>(() => {
+    if (!comparison?.comparison_data || typeof comparison.comparison_data !== "object") {
+      return null;
+    }
+
+    const record = comparison.comparison_data as Record<string, unknown>;
+    const candidates = [
+      record.source_metadata,
+      record.sources,
+      (record.metadata as Record<string, unknown> | undefined)?.sources,
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate && typeof candidate === "object") {
+        return candidate as ComparisonSourceMetadata;
+      }
+    }
+
+    return null;
+  }, [comparison]);
+
   const offers = useMemo<ComparisonOffer[]>(() => {
     return documents.map((doc, idx) => {
       const extracted = (doc.extracted_data ?? null) as ExtractedOfferData | null;
@@ -105,6 +131,11 @@ export default function ComparisonResult() {
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis),
     [offers, comparisonAnalysis]
+  );
+
+  const sections = useMemo<ComparisonSection[]>(
+    () => buildComparisonSections(offers, comparisonAnalysis, sourceMetadata),
+    [offers, comparisonAnalysis, sourceMetadata]
   );
 
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
@@ -223,9 +254,10 @@ export default function ComparisonResult() {
           {/* Tab 2: Detailed Comparison */}
           <TabsContent value="details">
             <ComparisonTable
+              comparisonId={comparison.id}
               offers={offers}
               bestOfferIndex={bestOfferIndex}
-              comparisonAnalysis={comparisonAnalysis}
+              sections={sections}
             />
           </TabsContent>
 
