@@ -792,8 +792,14 @@ serve(async (req) => {
       };
 
       // Merge unified structure with original extracted data for backward compatibility
+      const predictedProductType =
+        extractedData?.product_type ??
+        extractedData?.productType ??
+        null;
+
       const finalData = {
         ...extractedData,
+        product_type: predictedProductType,
         unified: unifiedOffer,
         diagnostics
       };

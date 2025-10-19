@@ -1,11 +1,48 @@
 import { describe, expect, it } from "bun:test";
-import {
+declare global {
+  // eslint-disable-next-line no-var
+  var localStorage: Storage;
+}
+
+if (typeof globalThis.localStorage === "undefined") {
+  const storage = new Map<string, string>();
+  globalThis.localStorage = {
+    get length() {
+      return storage.size;
+    },
+    clear: () => {
+      storage.clear();
+    },
+    getItem: (key: string) => storage.get(key) ?? null,
+    key: (index: number) => Array.from(storage.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      storage.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      storage.set(key, value);
+    },
+  } as Storage;
+}
+
+const {
   executeComparisonRun,
-  type ComparisonFlowRunner,
   validateFileSelection,
   validateStartConditions,
-} from "./useComparisonFlow";
-import { ComparisonServiceError } from "../services/comparison-service";
+} = await import("./useComparisonFlow");
+const { ComparisonServiceError } = await import("../services/comparison-service");
+
+type ComparisonFlowRunner = {
+  runComparisonFlow: (params: {
+    userId: string;
+    files: File[];
+    onStageChange?: (stage: string) => void;
+    signal?: AbortSignal;
+  }) => Promise<{
+    comparisonId: string;
+    documentIds: string[];
+    detectedProductType: string | null;
+  }>;
+};
 
 const createFile = (name: string, size = 512, type = "application/pdf") =>
   new File(["a".repeat(size)], name, { type });
@@ -78,7 +115,11 @@ describe("executeComparisonRun", () => {
     const runner = createRunner(async ({ onStageChange }) => {
       onStageChange?.("uploading_files");
       onStageChange?.("creating_documents");
-      return { comparisonId: "cmp-1", documentIds: ["doc-1", "doc-2"] };
+      return {
+        comparisonId: "cmp-1",
+        documentIds: ["doc-1", "doc-2"],
+        detectedProductType: "OC/AC",
+      };
     });
 
     const controller = new AbortController();
@@ -86,12 +127,15 @@ describe("executeComparisonRun", () => {
       runner,
       userId: "user-1",
       files: [createFile("a.pdf"), createFile("b.pdf")],
-      productType: "OC/AC",
       controller,
       onStageChange: (stage) => stages.push(stage),
     });
 
-    expect(result).toEqual({ status: "success", comparisonId: "cmp-1" });
+    expect(result).toEqual({
+      status: "success",
+      comparisonId: "cmp-1",
+      detectedProductType: "OC/AC",
+    });
     expect(stages).toEqual(["uploading_files", "creating_documents"]);
   });
 
@@ -110,7 +154,6 @@ describe("executeComparisonRun", () => {
       runner,
       userId: "user-1",
       files: [createFile("a.pdf"), createFile("b.pdf")],
-      productType: "OC/AC",
       controller,
     });
 
@@ -129,7 +172,6 @@ describe("executeComparisonRun", () => {
       runner,
       userId: "user-1",
       files: [createFile("a.pdf"), createFile("b.pdf")],
-      productType: "OC/AC",
       controller,
     });
 
