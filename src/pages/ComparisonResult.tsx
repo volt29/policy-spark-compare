@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { useDocumentViewer } from "@/contexts/DocumentViewerContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -25,12 +26,12 @@ import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
 import { SectionComparisonView } from "@/components/comparison/SectionComparisonView";
 import { SourceTooltip } from "@/components/comparison/SourceTooltip";
+import { DocumentViewerDialog } from "@/components/comparison/DocumentViewerDialog";
 import {
   analyzeBestOffers,
   extractCalculationId,
   createAnalysisLookup,
   findOfferAnalysis,
-  getPremium,
   type ComparisonOffer,
   type ExtractedOfferData,
 } from "@/lib/comparison-utils";
@@ -38,14 +39,220 @@ import {
   buildComparisonSections,
   type ComparisonSection,
   type ComparisonSourceMetadata,
+  type ComparisonSourceMetadataEntry,
+  type ComparisonSourceMetadataRow,
 } from "@/lib/buildComparisonSections";
 import type { Database } from "@/integrations/supabase/types";
 import { toComparisonAnalysis, type SourceReference } from "@/types/comparison";
+import { getSignedDownloadUrl } from "@/services/document-service";
 
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
 
 const DOCUMENTS_BUCKET = "documents";
+
+const clampPageNumber = (value: number): number =>
+  Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+
+const toNullableNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const toNullableString = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+};
+
+const toNullableId = (value: unknown): string | number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+};
+
+const parseCoordinates = (value: unknown): SourceReference["coordinates"] | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const x = toNullableNumber(record.x);
+  const y = toNullableNumber(record.y);
+  const width = toNullableNumber(record.width);
+  const height = toNullableNumber(record.height);
+
+  if (x === null || y === null || width === null || height === null) {
+    return undefined;
+  }
+
+  return { x, y, width, height };
+};
+
+const parseSourceReferenceValue = (value: unknown): SourceReference | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const documentIdCandidate =
+    record.documentId ?? record.document_id ?? record.document ?? record.source_document;
+  const documentIdRaw = toNullableId(documentIdCandidate);
+  const pageCandidate =
+    record.page ?? record.pageNumber ?? record.page_index ?? record.pageIndex ?? record.index;
+  const pageNumber = clampPageNumber(toNullableNumber(pageCandidate) ?? 1);
+  const snippetCandidate =
+    record.textSnippet ?? record.text_snippet ?? record.snippet ?? record.text ?? record.content;
+  const textSnippet = toNullableString(snippetCandidate) ?? "Fragment źródła niedostępny";
+  const coordinates = parseCoordinates(record.coordinates ?? record.bounding_box ?? record.bounds);
+
+  if (!documentIdRaw) {
+    return null;
+  }
+
+  return {
+    documentId: String(documentIdRaw),
+    page: pageNumber,
+    textSnippet,
+    ...(coordinates ? { coordinates } : {}),
+  } satisfies SourceReference;
+};
+
+const parseSourceReferencesValue = (value: unknown): SourceReference[] | null => {
+  if (!value) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    const references = value
+      .map((entry) => parseSourceReferenceValue(entry))
+      .filter((entry): entry is SourceReference => Boolean(entry));
+    return references.length > 0 ? references : null;
+  }
+
+  const single = parseSourceReferenceValue(value);
+  return single ? [single] : null;
+};
+
+const parseSourceMetadataEntry = (
+  value: unknown,
+): ComparisonSourceMetadataEntry | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const entry: ComparisonSourceMetadataEntry = {
+    offer_id: toNullableId(record.offer_id ?? record.offerId) ?? undefined,
+    document_id: toNullableId(record.document_id ?? record.documentId) ?? undefined,
+    calculation_id: toNullableId(record.calculation_id ?? record.calculationId) ?? undefined,
+    index: toNullableNumber(record.index) ?? undefined,
+    source: toNullableString(record.source),
+    normalization: toNullableString(record.normalization),
+    unit: toNullableString(record.unit),
+    note: toNullableString(record.note),
+  };
+
+  if (
+    entry.offer_id === undefined &&
+    entry.document_id === undefined &&
+    entry.calculation_id === undefined &&
+    entry.index === undefined &&
+    !entry.source &&
+    !entry.normalization &&
+    !entry.unit &&
+    !entry.note
+  ) {
+    return null;
+  }
+
+  return entry;
+};
+
+const parseSourceMetadataRow = (value: unknown): ComparisonSourceMetadataRow => {
+  const base: ComparisonSourceMetadataRow = { label: null, entries: [] };
+
+  if (!value) {
+    return base;
+  }
+
+  if (Array.isArray(value)) {
+    const entries = value
+      .map((entry) => parseSourceMetadataEntry(entry))
+      .filter((entry): entry is ComparisonSourceMetadataEntry => entry !== null);
+    return { label: null, entries };
+  }
+
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const entriesValue = record.entries;
+    const entries = Array.isArray(entriesValue)
+      ? entriesValue
+          .map((entry) => parseSourceMetadataEntry(entry))
+          .filter((entry): entry is ComparisonSourceMetadataEntry => entry !== null)
+      : [parseSourceMetadataEntry(record)].filter(
+          (entry): entry is ComparisonSourceMetadataEntry => entry !== null,
+        );
+    const label = toNullableString(record.label);
+    return { label, entries };
+  }
+
+  return base;
+};
+
+const buildSourceMetadataFromSummary = (
+  value: Record<string, unknown>,
+): ComparisonSourceMetadata | null => {
+  const metadataEntries: ComparisonSourceMetadata = {};
+
+  Object.entries(value).forEach(([key, entryValue]) => {
+    if (key === "metrics") {
+      return;
+    }
+
+    const row = parseSourceMetadataRow(entryValue);
+    if (row.entries.length > 0 || row.label) {
+      metadataEntries[key] = row;
+    }
+  });
+
+  return Object.keys(metadataEntries).length > 0 ? metadataEntries : null;
+};
+
+type MetricsSourceReferenceMap = Partial<Record<string, SourceReference[]>>;
+
+const extractMetricsSourceReferences = (
+  value: Record<string, unknown>,
+): MetricsSourceReferenceMap | undefined => {
+  const metricsRaw = value.metrics;
+  if (!metricsRaw || typeof metricsRaw !== "object") {
+    return undefined;
+  }
+
+  const references: MetricsSourceReferenceMap = {};
+
+  Object.entries(metricsRaw as Record<string, unknown>).forEach(([key, entryValue]) => {
+    const parsed = parseSourceReferencesValue(entryValue);
+    if (parsed && parsed.length > 0) {
+      references[key] = parsed;
+    }
+  });
+
+  return Object.keys(references).length > 0 ? references : undefined;
+};
 
 const normalizeString = (value: unknown): string | null => {
   if (typeof value === "string") {
@@ -145,6 +352,7 @@ export default function ComparisonResult() {
     documentId: null as string | null,
     page: 1,
   });
+  const { activeReference, clear } = useDocumentViewer();
 
   const buildOfferActions = useCallback(
     (offer: ComparisonOffer, isSelected: boolean): OfferCardAction[] => {
@@ -199,16 +407,8 @@ export default function ComparisonResult() {
     [setSelectedOfferId]
   );
 
-  useEffect(() => {
-    if (!user) {
-      navigate("/auth");
-      return;
-    }
-
-    loadComparison();
-  }, [id, user, navigate]);
-
-  const loadComparison = async () => {
+  const loadComparison = useCallback(async () => {
+    setLoading(true);
     try {
       const { data: compData, error: compError } = await supabase
         .from("comparisons")
@@ -233,7 +433,16 @@ export default function ComparisonResult() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id, navigate]);
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/auth");
+      return;
+    }
+
+    void loadComparison();
+  }, [user, navigate, loadComparison]);
 
   const comparisonAnalysis = useMemo(
     () =>
@@ -243,17 +452,43 @@ export default function ComparisonResult() {
     [comparison]
   );
 
-  const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
+  const sourceMetadata = useMemo<ComparisonSourceMetadata | null>(() => {
+    const summarySources = comparisonAnalysis?.summary?.sources_map;
+    if (!summarySources || typeof summarySources !== "object") {
+      return null;
+    }
 
-  const labeledOffers = useMemo(
-    () =>
-      offers.map((offer) => ({
-        id: offer.id,
-        label: offer.insurer,
-        insurer: offer.insurer,
-      })),
-    [offers],
-  );
+    return buildSourceMetadataFromSummary(summarySources as Record<string, unknown>);
+  }, [comparisonAnalysis]);
+
+  const metricsSourceReferences = useMemo<
+    Partial<Record<string, SourceReference[] | null>> | undefined
+  >(() => {
+    const summarySources = comparisonAnalysis?.summary?.sources_map;
+    if (!summarySources || typeof summarySources !== "object") {
+      return undefined;
+    }
+
+    return extractMetricsSourceReferences(summarySources as Record<string, unknown>);
+  }, [comparisonAnalysis]);
+
+  const hasStructuredSummary = useMemo(() => {
+    const summary = comparisonAnalysis?.summary;
+    if (!summary) {
+      return false;
+    }
+
+    const recommendedOffer = summary.recommended_offer;
+    const hasRecommendedOffer = Boolean(recommendedOffer);
+    const hasKeyNumbers = (recommendedOffer?.key_numbers?.length ?? 0) > 0;
+    const hasReasons = (summary.reasons?.length ?? 0) > 0;
+    const hasRisks = (summary.risks?.length ?? 0) > 0;
+    const hasNextSteps = (summary.next_steps?.length ?? 0) > 0;
+
+    return hasRecommendedOffer || hasKeyNumbers || hasReasons || hasRisks || hasNextSteps;
+  }, [comparisonAnalysis]);
+
+  const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
 
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis),
@@ -265,6 +500,25 @@ export default function ComparisonResult() {
     [offers, comparisonAnalysis, sourceMetadata]
   );
 
+  const {
+    priceAnalyses,
+    coverageAnalyses,
+    assistanceAnalyses,
+    exclusionsAnalyses,
+  } = useMemo(() => {
+    const priceLookup = createAnalysisLookup(comparisonAnalysis?.price_comparison);
+    const coverageLookup = createAnalysisLookup(comparisonAnalysis?.coverage_comparison);
+    const assistanceLookup = createAnalysisLookup(comparisonAnalysis?.assistance_comparison);
+    const exclusionsLookup = createAnalysisLookup(comparisonAnalysis?.exclusions_diff);
+
+    return {
+      priceAnalyses: offers.map((offer, idx) => findOfferAnalysis(priceLookup, offer, idx)),
+      coverageAnalyses: offers.map((offer, idx) => findOfferAnalysis(coverageLookup, offer, idx)),
+      assistanceAnalyses: offers.map((offer, idx) => findOfferAnalysis(assistanceLookup, offer, idx)),
+      exclusionsAnalyses: offers.map((offer, idx) => findOfferAnalysis(exclusionsLookup, offer, idx)),
+    };
+  }, [comparisonAnalysis, offers]);
+
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
 
   const currentViewerDocument = useMemo(() => {
@@ -274,22 +528,24 @@ export default function ComparisonResult() {
     return documents.find((doc) => doc.id === viewerState.documentId) ?? null;
   }, [documents, viewerState.documentId]);
 
-  const openDocumentPreview = useCallback(
-    (documentId: string, page = 1) => {
-      const document = documents.find((doc) => doc.id === documentId);
-      if (!document) {
-        toast.error("Nie znaleziono dokumentu do podglądu.");
-        return;
-      }
+  useEffect(() => {
+    if (!activeReference) {
+      return;
+    }
 
-      setViewerState({
-        isOpen: true,
-        documentId: document.id,
-        page: clampPageNumber(Number(page)),
-      });
-    },
-    [documents],
-  );
+    const document = documents.find((doc) => doc.id === activeReference.documentId);
+    if (!document) {
+      toast.error("Nie znaleziono dokumentu do podglądu.");
+      clear();
+      return;
+    }
+
+    setViewerState({
+      isOpen: true,
+      documentId: document.id,
+      page: clampPageNumber(activeReference.page),
+    });
+  }, [activeReference, documents, clear]);
 
   const handleDownloadDocument = useCallback(
     async (documentId: string) => {
@@ -315,30 +571,19 @@ export default function ComparisonResult() {
     [documents],
   );
 
-  const handleViewerOpenChange = useCallback((open: boolean) => {
-    if (!open) {
-      setViewerState((prev) => ({ ...prev, isOpen: false }));
-    }
-  }, []);
+  const handleViewerOpenChange = useCallback(
+    (open: boolean) => {
+      setViewerState((prev) => ({ ...prev, isOpen: open }));
+      if (!open) {
+        clear();
+      }
+    },
+    [clear],
+  );
 
   const handleViewerPageChange = useCallback((page: number) => {
     setViewerState((prev) => ({ ...prev, page: clampPageNumber(page) }));
   }, []);
-
-  useEffect(() => {
-    const listener = ((event: Event) => {
-      const detail = (event as CustomEvent<DocumentTooltipEventDetail>).detail;
-      if (!detail?.documentId) {
-        return;
-      }
-      openDocumentPreview(detail.documentId, detail.page ?? 1);
-    }) as EventListener;
-
-    window.addEventListener(DOCUMENT_TOOLTIP_EVENT, listener);
-    return () => {
-      window.removeEventListener(DOCUMENT_TOOLTIP_EVENT, listener);
-    };
-  }, [openDocumentPreview]);
 
   if (loading) {
     return (
@@ -473,7 +718,18 @@ export default function ComparisonResult() {
             />
           </TabsContent>
 
-          {/* Tab 3: AI Analysis */}
+          {/* Tab 3: AI Sections */}
+          <TabsContent value="sections" className="space-y-6">
+            <SectionComparisonView
+              offers={offers}
+              priceAnalyses={priceAnalyses}
+              coverageAnalyses={coverageAnalyses}
+              assistanceAnalyses={assistanceAnalyses}
+              exclusionsAnalyses={exclusionsAnalyses}
+            />
+          </TabsContent>
+
+          {/* Tab 4: AI Analysis */}
           <TabsContent value="ai" className="space-y-6">
             {/* AI Summary */}
             {(hasStructuredSummary || fallbackSummaryText) && (
