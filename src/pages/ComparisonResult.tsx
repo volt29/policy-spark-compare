@@ -140,6 +140,11 @@ export default function ComparisonResult() {
   const [comparison, setComparison] = useState<ComparisonRow | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null);
+  const [viewerState, setViewerState] = useState({
+    isOpen: false,
+    documentId: null as string | null,
+    page: 1,
+  });
 
   const buildOfferActions = useCallback(
     (offer: ComparisonOffer, isSelected: boolean): OfferCardAction[] => {
@@ -252,6 +257,79 @@ export default function ComparisonResult() {
 
   const selectedOffer = offers.find((o) => o.id === selectedOfferId);
 
+  const currentViewerDocument = useMemo(() => {
+    if (!viewerState.documentId) {
+      return null;
+    }
+    return documents.find((doc) => doc.id === viewerState.documentId) ?? null;
+  }, [documents, viewerState.documentId]);
+
+  const openDocumentPreview = useCallback(
+    (documentId: string, page = 1) => {
+      const document = documents.find((doc) => doc.id === documentId);
+      if (!document) {
+        toast.error("Nie znaleziono dokumentu do podglądu.");
+        return;
+      }
+
+      setViewerState({
+        isOpen: true,
+        documentId: document.id,
+        page: clampPageNumber(Number(page)),
+      });
+    },
+    [documents],
+  );
+
+  const handleDownloadDocument = useCallback(
+    async (documentId: string) => {
+      const document = documents.find((doc) => doc.id === documentId);
+      if (!document) {
+        toast.error("Nie znaleziono dokumentu do pobrania.");
+        return;
+      }
+
+      try {
+        const signedUrl = await getSignedDownloadUrl(document.file_path);
+        const newTab = window.open(signedUrl, "_blank", "noopener");
+        if (!newTab) {
+          window.location.href = signedUrl;
+        }
+      } catch (error) {
+        const description = error instanceof Error ? error.message : undefined;
+        toast.error("Nie udało się pobrać dokumentu.", {
+          description,
+        });
+      }
+    },
+    [documents],
+  );
+
+  const handleViewerOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      setViewerState((prev) => ({ ...prev, isOpen: false }));
+    }
+  }, []);
+
+  const handleViewerPageChange = useCallback((page: number) => {
+    setViewerState((prev) => ({ ...prev, page: clampPageNumber(page) }));
+  }, []);
+
+  useEffect(() => {
+    const listener = ((event: Event) => {
+      const detail = (event as CustomEvent<DocumentTooltipEventDetail>).detail;
+      if (!detail?.documentId) {
+        return;
+      }
+      openDocumentPreview(detail.documentId, detail.page ?? 1);
+    }) as EventListener;
+
+    window.addEventListener(DOCUMENT_TOOLTIP_EVENT, listener);
+    return () => {
+      window.removeEventListener(DOCUMENT_TOOLTIP_EVENT, listener);
+    };
+  }, [openDocumentPreview]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
@@ -320,7 +398,8 @@ export default function ComparisonResult() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-subtle">
+    <>
+      <div className="min-h-screen bg-gradient-subtle">
       {/* Sticky Header */}
       <div className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
@@ -604,5 +683,16 @@ export default function ComparisonResult() {
         </div>
       )}
     </div>
+    <DocumentViewerDialog
+      isOpen={viewerState.isOpen}
+      document={currentViewerDocument}
+      page={viewerState.page}
+      onOpenChange={handleViewerOpenChange}
+      onPageChange={handleViewerPageChange}
+      onDownload={(document) => {
+        void handleDownloadDocument(document.id);
+      }}
+    />
+    </>
   );
 }
