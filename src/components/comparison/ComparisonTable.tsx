@@ -258,8 +258,9 @@ export function ComparisonTable({
         <CardTitle>Szczegółowe porównanie</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto">
-          <Table>
+        <TooltipProvider>
+          <div className="overflow-x-auto">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[200px]">Kategoria</TableHead>
@@ -326,10 +327,10 @@ export function ComparisonTable({
 
             </TableBody>
           </Table>
-        </div>
+          </div>
 
-        <div className="rounded-lg border bg-card">
-          <Table>
+          <div className="rounded-lg border bg-card">
+            <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[240px]">Sekcja</TableHead>
