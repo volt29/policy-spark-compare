@@ -323,27 +323,30 @@ export function ComparisonTable({
                 })}
               </TableRow>
 
-              {priceAnalyses.some((analysis) => {
-                const metrics = getPriceMetrics(analysis);
-                return metrics.delta !== null || metrics.percent !== null;
-              }) && (
-                <TableRow>
-                  <TableHead className="w-[240px]">Sekcja</TableHead>
-                  {offers.map((offer, idx) => (
-                    <TableHead key={offer.id} className={cn(idx === bestOfferIndex && "bg-primary/5")}>
-                      <div className="space-y-1">
-                        <div className="font-semibold">{offer.insurer}</div>
-                        {idx === bestOfferIndex && (
-                          <Badge variant="default" className="text-xs">
-                            Rekomendowana
-                          </Badge>
-                        )}
-                      </div>
-                    </TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            </TableBody>
+          </Table>
+        </div>
+
+        <div className="rounded-lg border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[240px]">Sekcja</TableHead>
+                {offers.map((offer, idx) => (
+                  <TableHead key={offer.id} className={cn(idx === bestOfferIndex && "bg-primary/5")}>
+                    <div className="space-y-1">
+                      <div className="font-semibold">{offer.insurer}</div>
+                      {idx === bestOfferIndex && (
+                        <Badge variant="default" className="text-xs">
+                          Rekomendowana
+                        </Badge>
+                      )}
+                    </div>
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
                 {sections.map((section) => {
                   const Icon = section.icon ? SECTION_ICON_MAP[section.icon] ?? Shield : Shield;
                   const open = isSectionOpen(section.id, section.defaultExpanded ?? true);

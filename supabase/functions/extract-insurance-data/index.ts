@@ -523,7 +523,7 @@ serve(async (req) => {
           imageContent = [
             { type: 'text', text: `Ekstrahuj dane z tego dokumentu ubezpieczeniowego (${base64Pages.length} ${base64Pages.length === 1 ? 'strona' : 'strony'}):` },
             ...base64Pages.map(base64 => ({
-              type: 'image_url',
+              type: 'image_url' as const,
               image_url: { url: `data:image/jpeg;base64,${base64}` }
             }))
           ];
