@@ -1,3 +1,5 @@
+import { SourceTooltip } from "@/components/comparison/SourceTooltip";
+import type { SourceReference } from "@/types/comparison";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +16,16 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
+
+interface OfferCardAnalysisSection {
+  sources?: SourceReference[] | null;
+}
+
+interface OfferCardAnalysis {
+  price?: OfferCardAnalysisSection;
+  coverage?: OfferCardAnalysisSection;
+  assistance?: OfferCardAnalysisSection;
+}
 
 export interface OfferCardAction {
   key: string;
@@ -44,6 +56,7 @@ export function OfferCard({
   badges = [],
   isSelected,
   onSelect,
+  analysis,
 }: OfferCardProps) {
   // Support both old and new unified format
   const unified = offer.data?.unified;
