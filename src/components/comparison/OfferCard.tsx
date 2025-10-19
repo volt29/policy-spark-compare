@@ -33,6 +33,7 @@ interface OfferCardProps {
   badges?: Array<'lowest-price' | 'highest-coverage' | 'recommended' | 'warning'>;
   isSelected?: boolean;
   onSelect?: () => void;
+  analysis?: OfferCardAnalysis;
 }
 
 export function OfferCard({
@@ -137,11 +138,13 @@ export function OfferCard({
       <CardContent className="space-y-4">
         {/* Premium */}
         <div className="text-center py-4 bg-muted/50 rounded-lg">
-          <div className="text-4xl font-bold text-primary">
-            {premium ? `${premium.toLocaleString('pl-PL')} ${currency}` : 'Brak danych'}
-          </div>
+          <SourceTooltip reference={analysis?.price?.sources}>
+            <div className="text-4xl font-bold text-primary">
+              {premium ? `${premium.toLocaleString('pl-PL')} ${currency}` : 'Brak danych'}
+            </div>
+          </SourceTooltip>
           <div className="text-sm text-muted-foreground mt-1">składka miesięczna</div>
-          
+
           {hasDiscounts && premiumBefore && premiumBefore > premium && (
             <div className="text-xs text-muted-foreground mt-2">
               <span className="line-through">{premiumBefore.toLocaleString('pl-PL')} {currency}</span>
@@ -158,15 +161,19 @@ export function OfferCard({
             <div className="flex items-center gap-2 text-sm">
               <Shield className="w-4 h-4 text-primary" />
               <span className="text-muted-foreground">OC:</span>
-              <span className="font-medium">{ocSum.toLocaleString('pl-PL')} PLN</span>
+              <SourceTooltip reference={analysis?.coverage?.sources}>
+                <span className="font-medium">{ocSum.toLocaleString('pl-PL')} PLN</span>
+              </SourceTooltip>
             </div>
           )}
-          
+
           {assistanceCount > 0 && (
             <div className="flex items-center gap-2 text-sm">
               <Heart className="w-4 h-4 text-primary" />
               <span className="text-muted-foreground">Assistance:</span>
-              <span className="font-medium">{assistanceCount} usług</span>
+              <SourceTooltip reference={analysis?.assistance?.sources}>
+                <span className="font-medium">{assistanceCount} usług</span>
+              </SourceTooltip>
             </div>
           )}
           

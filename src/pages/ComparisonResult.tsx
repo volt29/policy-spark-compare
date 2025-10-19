@@ -17,14 +17,20 @@ import {
   ListChecks,
   CheckCircle2,
   AlertTriangle,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { OfferCard, type OfferCardAction } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
+import { SectionComparisonView } from "@/components/comparison/SectionComparisonView";
+import { SourceTooltip } from "@/components/comparison/SourceTooltip";
 import {
   analyzeBestOffers,
   extractCalculationId,
+  createAnalysisLookup,
+  findOfferAnalysis,
+  getPremium,
   type ComparisonOffer,
   type ExtractedOfferData,
 } from "@/lib/comparison-utils";
@@ -34,7 +40,7 @@ import {
   type ComparisonSourceMetadata,
 } from "@/lib/buildComparisonSections";
 import type { Database } from "@/integrations/supabase/types";
-import { toComparisonAnalysis } from "@/types/comparison";
+import { toComparisonAnalysis, type SourceReference } from "@/types/comparison";
 
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
@@ -332,11 +338,11 @@ export default function ComparisonResult() {
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8 space-y-6">
         {/* Metrics Panel */}
-        <MetricsPanel offers={offers} />
+        <MetricsPanel offers={offers} sourceReferences={metricsSourceReferences} />
 
         {/* Tabbed Interface */}
         <Tabs defaultValue="overview" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="overview" className="gap-2">
               <BarChart3 className="w-4 h-4" />
               Przegląd ofert
@@ -344,6 +350,10 @@ export default function ComparisonResult() {
             <TabsTrigger value="details" className="gap-2">
               <ListChecks className="w-4 h-4" />
               Szczegółowe porównanie
+            </TabsTrigger>
+            <TabsTrigger value="sections" className="gap-2">
+              <Layers className="w-4 h-4" />
+              Sekcje AI
             </TabsTrigger>
             <TabsTrigger value="ai" className="gap-2">
               <Sparkles className="w-4 h-4" />
@@ -430,9 +440,11 @@ export default function ComparisonResult() {
                                   <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                                     {metric.label}
                                   </dt>
-                                  <dd className="text-lg font-semibold text-foreground">
-                                    {metric.value}
-                                  </dd>
+                                  <SourceTooltip reference={metric.sources}>
+                                    <dd className="text-lg font-semibold text-foreground">
+                                      {metric.value}
+                                    </dd>
+                                  </SourceTooltip>
                                 </div>
                               ))}
                             </dl>

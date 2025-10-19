@@ -5,7 +5,108 @@ type Json = Database["public"]["Tables"]["comparisons"]["Row"]["comparison_data"
 type Primitive = string | number | boolean | null;
 type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
 
+const toNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const normalizeString = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value.toString();
+  }
+  return null;
+};
+
+const parseCoordinates = (value: unknown): SourceReferenceCoordinates | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const x = toNumber(record.x);
+  const y = toNumber(record.y);
+  const width = toNumber(record.width);
+  const height = toNumber(record.height);
+
+  if (x === null || y === null || width === null || height === null) {
+    return undefined;
+  }
+
+  return { x, y, width, height } satisfies SourceReferenceCoordinates;
+};
+
+const parseSingleSourceReference = (value: unknown): SourceReference | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const documentId =
+    normalizeString(record.documentId ?? record.document_id ?? record.document ?? record.source_document) ?? null;
+  const pageValue =
+    toNumber(record.page ?? record.pageNumber ?? record.page_index ?? record.pageIndex ?? record.index) ?? null;
+  const textSnippet =
+    normalizeString(record.textSnippet ?? record.text_snippet ?? record.snippet ?? record.text ?? record.content) ?? null;
+
+  if (!documentId || pageValue === null || !textSnippet) {
+    return null;
+  }
+
+  const coordinates = parseCoordinates(record.coordinates ?? record.bounding_box ?? record.bounds);
+
+  return {
+    documentId,
+    page: Math.max(1, Math.floor(pageValue)),
+    textSnippet,
+    ...(coordinates ? { coordinates } : {}),
+  } satisfies SourceReference;
+};
+
+const parseSourceReferences = (value: unknown): SourceReference[] | null => {
+  if (!value) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    const references = value
+      .map((entry) => parseSingleSourceReference(entry))
+      .filter((entry): entry is SourceReference => entry !== null);
+    return references.length > 0 ? references : null;
+  }
+
+  const single = parseSingleSourceReference(value);
+  return single ? [single] : null;
+};
+
 export type ComparisonHighlight = "best" | "warning" | "neutral";
+
+export interface SourceReferenceCoordinates {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SourceReference {
+  documentId: string;
+  page: number;
+  textSnippet: string;
+  coordinates?: SourceReferenceCoordinates;
+}
 
 export interface ComparisonAnalysisOffer {
   offer_id?: string | number | null;
@@ -14,6 +115,7 @@ export interface ComparisonAnalysisOffer {
   note?: string | null;
   insurer?: string | null;
   value?: JsonValue;
+  sources?: SourceReference[] | null;
 }
 
 export interface ComparisonAnalysisSection {
@@ -23,6 +125,7 @@ export interface ComparisonAnalysisSection {
 export interface ComparisonSummaryKeyNumber {
   label: string;
   value: string;
+  sources?: SourceReference[] | null;
 }
 
 export interface ComparisonSummaryRecommendedOffer {
@@ -92,6 +195,13 @@ export function toComparisonAnalysis(
           }
           const offerRecord = item as Record<string, unknown>;
           const highlight = offerRecord.highlight;
+          const sources =
+            parseSourceReferences(
+              offerRecord.source_reference ??
+                offerRecord.source_references ??
+                offerRecord.source ??
+                offerRecord.sources,
+            ) ?? null;
           return {
             offer_id: offerRecord.offer_id as ComparisonAnalysisOffer["offer_id"],
             calculation_id: offerRecord.calculation_id as ComparisonAnalysisOffer["calculation_id"],
@@ -99,6 +209,7 @@ export function toComparisonAnalysis(
             insurer: typeof offerRecord.insurer === "string" ? offerRecord.insurer : null,
             note: typeof offerRecord.note === "string" ? offerRecord.note : null,
             value: offerRecord.value as JsonValue,
+            sources,
           } satisfies ComparisonAnalysisOffer;
         })
         .filter((item): item is ComparisonAnalysisOffer => item !== null);
@@ -158,7 +269,11 @@ export function toComparisonAnalysis(
         if (!label || !metricValue) {
           return null;
         }
-        return { label, value: metricValue } satisfies ComparisonSummaryKeyNumber;
+        const sources =
+          parseSourceReferences(
+            record.source_reference ?? record.source_references ?? record.source ?? record.sources,
+          ) ?? null;
+        return { label, value: metricValue, sources } satisfies ComparisonSummaryKeyNumber;
       })
       .filter((item): item is ComparisonSummaryKeyNumber => item !== null);
 
