@@ -179,25 +179,33 @@ export function ComparisonTable({ offers, bestOfferIndex }: ComparisonTableProps
                     <CollapsibleContent>
                       <div className="grid" style={{ gridTemplateColumns: `200px repeat(${offers.length}, 1fr)` }}>
                         <div className="p-3"></div>
-                        {offers.map((offer, idx) => (
-                          <div key={offer.id} className={cn(
-                            "p-3 border-t",
-                            idx === bestOfferIndex && "bg-primary/5"
-                          )}>
-                            {offer.data?.assistance && offer.data.assistance.length > 0 ? (
-                              <ul className="space-y-1 text-sm">
-                                {offer.data.assistance.map((service: any, i: number) => (
-                                  <li key={i} className="flex items-start gap-1">
-                                    <span className="text-primary mt-0.5">•</span>
-                                    <span>{typeof service === 'string' ? service : service.name}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <span className="text-muted-foreground text-sm">Brak danych</span>
-                            )}
-                          </div>
-                        ))}
+                        {offers.map((offer, idx) => {
+                          const assistanceItems = Array.isArray(offer.data?.unified?.assistance)
+                            ? offer.data.unified.assistance
+                            : Array.isArray(offer.data?.assistance)
+                              ? offer.data.assistance
+                              : [];
+
+                          return (
+                            <div key={offer.id} className={cn(
+                              "p-3 border-t",
+                              idx === bestOfferIndex && "bg-primary/5"
+                            )}>
+                              {assistanceItems.length > 0 ? (
+                                <ul className="space-y-1 text-sm">
+                                  {assistanceItems.map((service: any, i: number) => (
+                                    <li key={i} className="flex items-start gap-1">
+                                      <span className="text-primary mt-0.5">•</span>
+                                      <span>{typeof service === 'string' ? service : service.name}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <span className="text-muted-foreground text-sm">Brak danych</span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
@@ -221,25 +229,33 @@ export function ComparisonTable({ offers, bestOfferIndex }: ComparisonTableProps
                     <CollapsibleContent>
                       <div className="grid" style={{ gridTemplateColumns: `200px repeat(${offers.length}, 1fr)` }}>
                         <div className="p-3"></div>
-                        {offers.map((offer, idx) => (
-                          <div key={offer.id} className={cn(
-                            "p-3 border-t",
-                            idx === bestOfferIndex && "bg-primary/5"
-                          )}>
-                            {offer.data?.exclusions && offer.data.exclusions.length > 0 ? (
-                              <ul className="space-y-1 text-sm">
-                                {offer.data.exclusions.map((exclusion: any, i: number) => (
-                                  <li key={i} className="flex items-start gap-1">
-                                    <span className="text-destructive mt-0.5">•</span>
-                                    <span>{typeof exclusion === 'string' ? exclusion : (exclusion.name || exclusion.coverage || 'Brak opisu')}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <span className="text-muted-foreground text-sm">Brak informacji</span>
-                            )}
-                          </div>
-                        ))}
+                        {offers.map((offer, idx) => {
+                          const exclusionsItems = Array.isArray(offer.data?.unified?.exclusions)
+                            ? offer.data.unified.exclusions
+                            : Array.isArray(offer.data?.exclusions)
+                              ? offer.data.exclusions
+                              : [];
+
+                          return (
+                            <div key={offer.id} className={cn(
+                              "p-3 border-t",
+                              idx === bestOfferIndex && "bg-primary/5"
+                            )}>
+                              {exclusionsItems.length > 0 ? (
+                                <ul className="space-y-1 text-sm">
+                                  {exclusionsItems.map((exclusion: any, i: number) => (
+                                    <li key={i} className="flex items-start gap-1">
+                                      <span className="text-destructive mt-0.5">•</span>
+                                      <span>{typeof exclusion === 'string' ? exclusion : (exclusion.name || exclusion.coverage || 'Brak opisu')}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <span className="text-muted-foreground text-sm">Brak informacji</span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
