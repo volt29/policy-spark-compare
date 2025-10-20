@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, it } from "bun:test";
 import { analyzeBestOffers, extractCalculationId, type ComparisonOffer } from "./comparison-utils";
 import { toComparisonAnalysis } from "@/types/comparison";

@@ -24,6 +24,7 @@ const DEFAULT_OPTIONS: Required<ComparisonServiceOptions> = {
 
 export class ComparisonServiceError extends Error {
   readonly stage: ComparisonStage;
+  cause?: unknown;
 
   constructor(message: string, stage: ComparisonStage, cause?: unknown) {
     super(message);

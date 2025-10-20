@@ -463,7 +463,7 @@ export default function ComparisonResult() {
   }, [comparisonAnalysis]);
 
   const metricsSourceReferences = useMemo<
-    Partial<Record<string, SourceReference[] | null>> | undefined
+    Partial<Record<string, SourceReference[] | SourceReference | null>> | undefined
   >(() => {
     const summarySources = comparisonAnalysis?.summary?.sources_map;
     if (!summarySources || typeof summarySources !== "object") {

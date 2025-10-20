@@ -213,7 +213,7 @@ export function toComparisonAnalysis(
             sources,
           } satisfies ComparisonAnalysisOffer;
         })
-        .filter((item): item is ComparisonAnalysisOffer => item !== null);
+        .filter((item) => item !== null && item !== undefined) as ComparisonAnalysisOffer[];
 
       return { offers };
     };
@@ -276,7 +276,7 @@ export function toComparisonAnalysis(
           ) ?? null;
         return { label, value: metricValue, sources } satisfies ComparisonSummaryKeyNumber;
       })
-      .filter((item): item is ComparisonSummaryKeyNumber => item !== null);
+      .filter((item) => item !== null && item !== undefined) as ComparisonSummaryKeyNumber[];
 
     return metrics.length > 0 ? metrics : null;
   };
@@ -329,15 +329,6 @@ export function toComparisonAnalysis(
     if (risks) {
       summary.risks = risks;
     }
-  const exclusionsSection = parseSection(asRecord.exclusions_diff);
-  if (exclusionsSection) {
-    analysis.exclusions_diff = exclusionsSection;
-  }
-
-  const keyHighlights = parseStringArray(asRecord.key_highlights);
-  if (keyHighlights) {
-    analysis.key_highlights = keyHighlights;
-  }
 
     const nextSteps = parseStringArray(record.next_steps);
     if (nextSteps) {

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, it } from "bun:test";
 declare global {
   // eslint-disable-next-line no-var

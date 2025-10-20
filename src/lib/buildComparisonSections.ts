@@ -347,7 +347,7 @@ const mapSourceMetadata = (
               note: candidate.note ?? null,
             } satisfies ComparisonSourceMetadataEntry;
           })
-          .filter((entry): entry is ComparisonSourceMetadataEntry => entry !== null)
+          .filter((entry) => entry !== null && entry !== undefined) as ComparisonSourceMetadataEntry[]
       : [];
 
     map.set(key, {
@@ -707,8 +707,9 @@ export const buildComparisonSections = (
     analysisLabel: "Analiza AI",
     aiFallbackMessage: "Brak różnic wykrytych przez AI",
     values: offers.map((offer, idx) => {
-      const rawItems = Array.isArray(offer.data?.unified?.exclusions)
-        ? offer.data?.unified?.exclusions
+      const unifiedData = offer.data?.unified as Record<string, unknown> | undefined;
+      const rawItems = Array.isArray(unifiedData?.exclusions)
+        ? unifiedData.exclusions
         : Array.isArray((offer.data as Record<string, unknown> | null)?.exclusions)
           ? ((offer.data as Record<string, unknown>).exclusions as unknown[])
           : [];

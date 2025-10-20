@@ -16,7 +16,7 @@ type MetricDefinition = {
 
 interface MetricsPanelProps {
   offers: ComparisonOffer[];
-  sourceReferences?: Record<MetricKey, SourceReference[] | SourceReference | null>;
+  sourceReferences?: Partial<Record<MetricKey, SourceReference[] | SourceReference | null>>;
 }
 
 export function MetricsPanel({ offers, sourceReferences }: MetricsPanelProps) {

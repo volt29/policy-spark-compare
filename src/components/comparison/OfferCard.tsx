@@ -61,9 +61,11 @@ export function OfferCard({
   // Support both old and new unified format
   const unified = offer.data?.unified;
   
-  const premium = unified && unified.total_premium_after_discounts !== 'missing' 
+  const premiumValue = unified && unified.total_premium_after_discounts !== 'missing' 
     ? unified.total_premium_after_discounts 
     : offer.data?.premium?.total;
+  
+  const premium = typeof premiumValue === 'number' ? premiumValue : null;
     
   const currency = offer.data?.premium?.currency || 'PLN';
   
@@ -72,15 +74,18 @@ export function OfferCard({
   const assistanceData = unified?.assistance || offer.data?.assistance;
   const assistanceCount = Array.isArray(assistanceData) ? assistanceData.length : 0;
   
-  const period = unified?.duration?.variant 
+  const periodValue = unified?.duration?.variant 
     ? `${unified.duration.variant} (${calculateMonths(unified.duration.start, unified.duration.end)}m)`
     : offer.data?.period || '12m';
   
+  const period: string = typeof periodValue === 'string' ? periodValue : '12m';
+  
   // Show discount info if available
   const hasDiscounts = unified?.discounts && unified.discounts.length > 0;
-  const premiumBefore = unified?.total_premium_before_discounts !== 'missing' 
+  const premiumBeforeValue = unified?.total_premium_before_discounts !== 'missing' 
     ? unified?.total_premium_before_discounts 
     : null;
+  const premiumBefore = typeof premiumBeforeValue === 'number' ? premiumBeforeValue : null;
 
   return (
     <Card 
@@ -158,7 +163,7 @@ export function OfferCard({
           </SourceTooltip>
           <div className="text-sm text-muted-foreground mt-1">składka miesięczna</div>
 
-          {hasDiscounts && premiumBefore && premiumBefore > premium && (
+          {hasDiscounts && premiumBefore && premium && premiumBefore > premium && (
             <div className="text-xs text-muted-foreground mt-2">
               <span className="line-through">{premiumBefore.toLocaleString('pl-PL')} {currency}</span>
               <span className="text-success ml-2">

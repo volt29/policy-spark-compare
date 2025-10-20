@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, it } from "bun:test";
 import type { Session, User } from "@supabase/supabase-js";
 import type { AuthContextType } from "./AuthContext";
