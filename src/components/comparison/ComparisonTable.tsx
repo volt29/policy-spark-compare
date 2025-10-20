@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
+import { getPremium } from "@/lib/comparison-utils";
 import {
   type ComparisonDiffStatus,
   type ComparisonSection,
@@ -37,6 +38,8 @@ import {
   type HighlightTone,
 } from "@/lib/buildComparisonSections";
 import { usePersistentSectionState } from "@/hooks/usePersistentSectionState";
+import { ArrowDown } from "lucide-react";
+import { formatCurrency } from "@/lib/valueFormatters";
 
 const HIGHLIGHT_CELL_CLASSES: Record<Exclude<HighlightTone, "neutral" | undefined>, string> = {
   best: "bg-emerald-50 border-l-4 border-emerald-400 dark:bg-emerald-900/30 dark:border-emerald-700",
@@ -153,6 +156,30 @@ export function ComparisonTable({
     sections.map((section) => section.id),
     { defaults },
   );
+
+  // Calculate premiums and related data
+  const premiums = useMemo(() => offers.map((offer) => getPremium(offer.data)), [offers]);
+  
+  const lowestPremium = useMemo(() => {
+    return premiums.reduce<number | null>((acc, premium) => {
+      if (premium !== null && (acc === null || premium < acc)) {
+        return premium;
+      }
+      return acc;
+    }, null);
+  }, [premiums]);
+
+  const currencies = useMemo(() => {
+    return offers.map((offer) => {
+      const currency = offer.data?.premium?.currency;
+      return currency && typeof currency === 'string' ? currency : 'PLN';
+    });
+  }, [offers]);
+
+  // Find price section and analyses
+  const priceSection = useMemo(() => sections.find((s) => s.id === 'price'), [sections]);
+  const priceRow = useMemo(() => priceSection?.rows.find((r) => r.id === 'price.total'), [priceSection]);
+  const priceAnalyses = useMemo(() => priceRow?.values ?? [], [priceRow]);
 
   const renderValueContent = (
     cell: ComparisonValueCell,
@@ -310,7 +337,7 @@ export function ComparisonTable({
                       <div className="flex flex-col gap-2">
                         <div className="flex items-center gap-2">
                           {lowestPremium !== null && premium !== null && premium === lowestPremium && (
-                            <ArrowDown className="w-4 h-4 text-success" />
+                            <ArrowDown className="w-4 h-4 text-emerald-600" />
                           )}
                           <span>
                             {premium !== null
@@ -318,7 +345,16 @@ export function ComparisonTable({
                               : "Brak danych"}
                           </span>
                         </div>
-                        {renderAiBlock(priceAnalyses[idx], "Analiza AI", highlight, "Brak komentarza AI")}
+                        {priceAnalyses[idx] && renderAiBlock(priceAnalyses[idx], { 
+                          type: 'metric',
+                          id: 'price.total',
+                          label: 'Składka miesięczna',
+                          icon: 'price',
+                          analysisLabel: 'Analiza AI',
+                          aiFallbackMessage: 'Brak komentarza AI',
+                          values: [],
+                          diffStatus: 'equal'
+                        } as ComparisonSectionRow)}
                       </div>
                     </TableCell>
                   );

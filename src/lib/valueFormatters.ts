@@ -126,3 +126,19 @@ export const formatValueWithUnit = (
     unit,
   };
 };
+
+/**
+ * Format a number as currency
+ */
+export const formatCurrency = (
+  value: number,
+  currency: string = "PLN",
+  locale: string = DEFAULT_LOCALE
+): string => {
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: normalizeCurrencyCode(currency),
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(value);
+};
