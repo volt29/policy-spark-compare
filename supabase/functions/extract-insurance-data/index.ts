@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
+import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
 import { parsePdfText, combinePagesText, ParsedPage } from './pdf-parser.ts';
 import {
   segmentInsuranceSections,
@@ -13,6 +14,43 @@ import { buildUnifiedOffer, UnifiedOfferBuildResult } from './unified-builder.ts
 type LovableContentBlock = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
 const IMAGE_PAYLOAD_TARGET_BYTES = 4 * 1024 * 1024; // 4 MB safety window before hard 6 MB limit
+
+const allowedOrigins = (Deno.env.get("CORS_ALLOWED_ORIGINS") || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+
+const isOriginAllowed = (origin: string | null) => {
+  if (allowedOrigins.length === 0) {
+    return true;
+  }
+
+  if (!origin) {
+    return true;
+  }
+
+  return allowedOrigins.includes(origin);
+};
+
+const createCorsHeaders = (origin: string | null) => {
+  const allowOrigin =
+    allowedOrigins.length === 0
+      ? "*"
+      : origin && allowedOrigins.includes(origin)
+        ? origin
+        : "null";
+
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  } as const;
+};
+
+const requestSchema = z.object({
+  document_id: z.string().min(1, "document_id is required"),
+});
 
 function uint8ArrayToBase64(bytes: Uint8Array, chunkSize = 0x8000): string {
   if (bytes.length === 0) {
@@ -379,11 +417,6 @@ function mergeEntriesByKey(
   return Array.from(merged.values());
 }
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
 // Helper: Convert PDF to JPG using ConvertAPI - returns base64 encoded JPGs
 async function convertPdfToJpgs(
   pdfBytes: Uint8Array,
@@ -478,21 +511,62 @@ async function cleanupTempFiles(supabase: any, documentId: string) {
 
 serve(async (req) => {
   console.log('🚀 EXTRACT-INSURANCE-DATA v2.0 - STARTED', new Date().toISOString());
-  
+
+  const origin = req.headers.get('Origin');
+  const corsHeaders = createCorsHeaders(origin);
+
+  if (!isOriginAllowed(origin)) {
+    return new Response(
+      JSON.stringify({ error: 'Origin not allowed' }),
+      { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   let document_id: string | undefined;
   let supabase: any;
-  
+
   try {
     console.log('✅ Step 1: Request received');
-    
-    const body = await req.json();
-    console.log('✅ Step 2: Body parsed', { document_id: body.document_id });
-    
-    document_id = body.document_id;
+
+    const authHeader = req.headers.get('Authorization');
+
+    if (!authHeader || authHeader.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Missing Authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let parsedBody: unknown;
+
+    try {
+      parsedBody = await req.json();
+    } catch {
+      return new Response(
+        JSON.stringify({ error: 'Invalid JSON payload' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const validation = requestSchema.safeParse(parsedBody);
+
+    if (!validation.success) {
+      return new Response(
+        JSON.stringify({
+          error: 'Invalid request payload',
+          details: validation.error.flatten().fieldErrors
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    document_id = validation.data.document_id;
+    console.log('✅ Step 2: Body parsed', { document_id });
+
     console.log('✅ Step 3: Document ID extracted:', document_id);
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -500,8 +574,34 @@ serve(async (req) => {
     const lovableApiKey = Deno.env.get('LOVABLE_API_KEY')!;
     console.log('✅ Step 4: Env vars loaded');
 
-    supabase = createClient(supabaseUrl, supabaseKey);
+    supabase = createClient(supabaseUrl, supabaseKey, {
+      global: {
+        headers: {
+          Authorization: authHeader
+        }
+      }
+    });
     console.log('✅ Step 5: Supabase client created');
+
+    const accessToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const {
+      data: { user },
+      error: userError
+    } = accessToken
+      ? await supabase.auth.getUser(accessToken)
+      : { data: { user: null }, error: null } as const;
+
+    if (userError || !user) {
+      console.warn('extract-insurance-data: user authentication failed', {
+        hasError: !!userError
+      });
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log('✅ Step 6: User authenticated');
 
     // Get document details
     const { data: document, error: docError } = await supabase
@@ -509,16 +609,23 @@ serve(async (req) => {
       .select('*')
       .eq('id', document_id)
       .single();
-    
-    console.log('✅ Step 6: Document fetched', { exists: !!document, error: !!docError });
+
+    console.log('✅ Step 7: Document fetched', { exists: !!document, error: !!docError });
 
     if (docError || !document) {
       throw new Error('Document not found');
     }
-    
-    console.log('✅ Step 7: Document details', { 
-      mime_type: document.mime_type, 
-      file_path: document.file_path 
+
+    if (document.user_id !== user.id) {
+      return new Response(
+        JSON.stringify({ error: 'Forbidden' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log('✅ Step 8: Document details', {
+      mime_type: document.mime_type,
+      file_path: document.file_path
     });
 
     // Update status to processing
@@ -526,8 +633,8 @@ serve(async (req) => {
       .from('documents')
       .update({ status: 'processing' })
       .eq('id', document_id);
-    
-    console.log('✅ Step 8: Status updated to processing');
+
+    console.log('✅ Step 9: Status updated to processing');
 
     // Download file from storage
     const { data: fileData, error: downloadError } = await supabase.storage
@@ -1159,10 +1266,9 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Error in extract-insurance-data:', error);
-    
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    
+    console.error('Error in extract-insurance-data:', { message: errorMessage, document_id });
+
     // Update document status to 'failed'
     if (document_id && supabase) {
       try {
@@ -1171,27 +1277,28 @@ serve(async (req) => {
           .select('extracted_data')
           .eq('id', document_id)
           .single();
-        
+
         const attemptCount = (currentDoc?.extracted_data?.attempt_count || 0) + 1;
-        
+
         await supabase
           .from('documents')
-          .update({ 
+          .update({
             status: 'failed',
-            extracted_data: { 
+            extracted_data: {
               error: errorMessage,
               failed_at: new Date().toISOString(),
               attempt_count: attemptCount
             }
           })
           .eq('id', document_id);
-        
+
         console.log('Document status updated to failed:', document_id);
       } catch (updateError) {
-        console.error('Failed to update document status:', updateError);
+        const updateMessage = updateError instanceof Error ? updateError.message : String(updateError);
+        console.error('Failed to update document status:', { message: updateMessage, document_id });
       }
     }
-    
+
     return new Response(
       JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
