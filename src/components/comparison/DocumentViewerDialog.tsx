@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ArrowLeft, ArrowRight, Download, FileWarning, Loader2 } from "lucide-react";
 import type { Database } from "@/integrations/supabase/types";
-import { getSignedPreviewUrl } from "@/services/document-service";
 import { toast } from "sonner";
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
@@ -17,6 +16,7 @@ type DocumentViewerDialogProps = {
   onOpenChange: (open: boolean) => void;
   onPageChange: (page: number) => void;
   onDownload: (document: DocumentRow) => void;
+  fetchPreviewUrl: (document: DocumentRow) => Promise<string>;
 };
 
 const clampPage = (value: number) => (Number.isFinite(value) && value > 0 ? Math.floor(value) : 1);
@@ -46,6 +46,7 @@ export function DocumentViewerDialog({
   onOpenChange,
   onPageChange,
   onDownload,
+  fetchPreviewUrl,
 }: DocumentViewerDialogProps) {
   const [basePreviewUrl, setBasePreviewUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -85,7 +86,7 @@ export function DocumentViewerDialog({
       setPreviewError(null);
 
       try {
-        const url = await getSignedPreviewUrl(document.file_path);
+        const url = await fetchPreviewUrl(document);
         if (!isCancelled) {
           setBasePreviewUrl(url);
         }
@@ -109,7 +110,7 @@ export function DocumentViewerDialog({
     return () => {
       isCancelled = true;
     };
-  }, [document, isOpen, previewSupported]);
+  }, [document, fetchPreviewUrl, isOpen, previewSupported]);
 
   const displayUrl = useMemo(() => {
     if (!basePreviewUrl) return null;
