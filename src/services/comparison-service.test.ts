@@ -59,7 +59,7 @@ class StubBackend implements ComparisonBackend {
 
   async uploadToStorage(params: { bucket: string; objectKey: string; file: File }) {
     this.uploads.push(params);
-    return { path: `${params.bucket}/${params.objectKey}` };
+    return { path: params.objectKey };
   }
 
   async insertDocuments(payload: any[]) {
@@ -162,6 +162,11 @@ describe("ComparisonService", () => {
     const storedNames = backend.uploads.map(({ objectKey }) => objectKey);
     expect(storedNames[0]).toMatch(/^user-1\//);
     expect(storedNames[0]).not.toContain(" ");
+    expect(backend.insertedDocuments).toHaveLength(2);
+    backend.insertedDocuments.forEach((doc, index) => {
+      expect(doc.file_path).toBe(backend.uploads[index].objectKey);
+      expect(doc.file_path.startsWith("insurance-documents/")).toBe(false);
+    });
     expect(backend.invokedFunctions).toEqual([
       { name: "extract-insurance-data", payload: { document_id: "doc-0" } },
       { name: "extract-insurance-data", payload: { document_id: "doc-1" } },

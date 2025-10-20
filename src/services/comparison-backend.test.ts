@@ -31,7 +31,7 @@ function createSupabaseStub(options: SupabaseStubOptions = {}) {
               return { data: null, error: { message: options.uploadError } };
             }
             uploads.push({ bucket, objectKey, fileName: file.name });
-            return { data: { path: `${bucket}/${objectKey}` }, error: null };
+            return { data: { path: objectKey }, error: null };
           },
         } as any;
       },
@@ -170,14 +170,14 @@ describe("createSupabaseComparisonBackend", () => {
       file,
     });
 
-    expect(uploadResult).toEqual({ path: "insurance-documents/user/offer.pdf" });
+    expect(uploadResult).toEqual({ path: "user/offer.pdf" });
     expect(uploads).toEqual([{ bucket: "insurance-documents", objectKey: "user/offer.pdf", fileName: "offer.pdf" }]);
 
     const inserted = await backend.insertDocuments([
       {
         user_id: "user-1",
         file_name: "offer.pdf",
-        file_path: "insurance-documents/user/offer.pdf",
+        file_path: "user/offer.pdf",
       } as any,
     ]);
     expect(inserted[0].id).toBe("doc-0");

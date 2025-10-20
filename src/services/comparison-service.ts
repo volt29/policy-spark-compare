@@ -44,7 +44,6 @@ type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentStatusRecord = Pick<DocumentRow, "id" | "status">;
 
 type UploadResult = {
-  path: string;
   storageKey: string;
   file: File;
 };
@@ -229,13 +228,13 @@ export class ComparisonService {
     try {
       const uploads = files.map(async (file) => {
         const storageKey = this.buildStorageKey(userId, file.name);
-        const { path } = await this.backend.uploadToStorage({
+        await this.backend.uploadToStorage({
           bucket: STORAGE_BUCKET,
           objectKey: storageKey,
           file,
         });
 
-        return { path, storageKey, file };
+        return { storageKey, file };
       });
 
       return await Promise.all(uploads);
@@ -252,10 +251,10 @@ export class ComparisonService {
     userId: string,
     uploadedFiles: UploadResult[]
   ): Promise<DocumentRow[]> {
-    const payload: DocumentInsert[] = uploadedFiles.map(({ file, path }) => ({
+    const payload: DocumentInsert[] = uploadedFiles.map(({ file, storageKey }) => ({
       user_id: userId,
       file_name: file.name,
-      file_path: path,
+      file_path: storageKey,
       file_size: file.size,
       mime_type: file.type,
       status: "uploaded",

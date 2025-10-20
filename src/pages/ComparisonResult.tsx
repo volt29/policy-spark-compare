@@ -44,12 +44,11 @@ import {
 } from "@/lib/buildComparisonSections";
 import type { Database } from "@/integrations/supabase/types";
 import { toComparisonAnalysis, type SourceReference } from "@/types/comparison";
-import { getSignedDownloadUrl } from "@/services/document-service";
+import { getSignedDownloadUrl, getSignedPreviewUrl } from "@/services/document-service";
+import { SignedUrlCache } from "@/services/signed-url-cache";
 
 type ComparisonRow = Database["public"]["Tables"]["comparisons"]["Row"];
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
-
-const DOCUMENTS_BUCKET = "documents";
 
 const clampPageNumber = (value: number): number =>
   Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
@@ -285,29 +284,6 @@ const detectProductType = (data: ExtractedOfferData | null): string | null => {
   return null;
 };
 
-const getDocumentPublicUrl = (filePath: string | null | undefined): string | null => {
-  if (!filePath) return null;
-  try {
-    const { data } = supabase.storage.from(DOCUMENTS_BUCKET).getPublicUrl(filePath);
-    return data?.publicUrl ?? null;
-  } catch (error) {
-    console.warn("Nie udało się zbudować adresu URL dokumentu", error);
-    return null;
-  }
-};
-
-const createDownloadUrl = (url: string | null | undefined): string | null => {
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    parsed.searchParams.set("download", "1");
-    return parsed.toString();
-  } catch (error) {
-    console.warn("Nie udało się zbudować adresu pobierania", error);
-    return url;
-  }
-};
-
 const openInNewTab = (url: string | null | undefined): boolean => {
   if (!url || typeof window === "undefined") {
     return false;
@@ -323,8 +299,6 @@ const mapDocumentsToOffers = (documents: DocumentRow[]): ComparisonOffer[] => {
     const label = `Oferta ${idx + 1}`;
     const insurer = normalizeString(extracted?.insurer);
     const calculationId = extractCalculationId(extracted);
-    const previewUrl = getDocumentPublicUrl(doc.file_path);
-
     return {
       id: doc.id,
       label,
@@ -333,8 +307,6 @@ const mapDocumentsToOffers = (documents: DocumentRow[]): ComparisonOffer[] => {
       calculationId,
       detectedProductType: detectProductType(extracted),
       fileName: doc.file_name,
-      previewUrl,
-      downloadUrl: createDownloadUrl(previewUrl),
     } satisfies ComparisonOffer;
   });
 };
@@ -352,7 +324,32 @@ export default function ComparisonResult() {
     documentId: null as string | null,
     page: 1,
   });
+  const [signedUrlCache] = useState(
+    () =>
+      new SignedUrlCache({
+        preview: (filePath: string) => getSignedPreviewUrl(filePath),
+        download: (filePath: string) => getSignedDownloadUrl(filePath),
+      })
+  );
   const { activeReference, clear } = useDocumentViewer();
+
+  const documentById = useMemo(() => {
+    const map = new Map<string, DocumentRow>();
+    documents.forEach((doc) => {
+      map.set(doc.id, doc);
+    });
+    return map;
+  }, [documents]);
+
+  const fetchPreviewUrl = useCallback(
+    (document: DocumentRow) => signedUrlCache.getPreviewUrl(document.file_path),
+    [signedUrlCache]
+  );
+
+  const fetchDownloadUrl = useCallback(
+    (document: DocumentRow) => signedUrlCache.getDownloadUrl(document.file_path),
+    [signedUrlCache]
+  );
 
   const buildOfferActions = useCallback(
     (offer: ComparisonOffer, isSelected: boolean): OfferCardAction[] => {
@@ -362,17 +359,43 @@ export default function ComparisonResult() {
         });
       };
 
+      const document = documentById.get(offer.id);
+
       const previewHandler = () => {
-        if (!openInNewTab(offer.previewUrl)) {
+        if (!document) {
           notifyUnavailable("Podgląd dokumentu jest niedostępny");
+          return;
         }
+
+        void fetchPreviewUrl(document)
+          .then((url) => {
+            if (!openInNewTab(url)) {
+              notifyUnavailable("Podgląd dokumentu jest niedostępny");
+            }
+          })
+          .catch((error) => {
+            const description = error instanceof Error ? error.message : undefined;
+            toast.error("Nie udało się wczytać podglądu.", { description });
+          });
       };
 
       const downloadHandler = () => {
-        const targetUrl = offer.downloadUrl ?? offer.previewUrl;
-        if (!openInNewTab(targetUrl)) {
+        if (!document) {
           notifyUnavailable("Nie udało się rozpocząć pobierania");
+          return;
         }
+
+        void fetchDownloadUrl(document)
+          .then((url) => {
+            const newTab = window.open(url, "_blank", "noopener");
+            if (!newTab) {
+              window.location.href = url;
+            }
+          })
+          .catch((error) => {
+            const description = error instanceof Error ? error.message : undefined;
+            toast.error("Nie udało się pobrać dokumentu.", { description });
+          });
       };
 
       return [
@@ -381,7 +404,7 @@ export default function ComparisonResult() {
           label: "Podgląd",
           icon: Eye,
           variant: "outline",
-          disabled: !offer.previewUrl,
+          disabled: !document,
           onClick: previewHandler,
         },
         {
@@ -389,7 +412,7 @@ export default function ComparisonResult() {
           label: "Pobierz",
           icon: Download,
           variant: "outline",
-          disabled: !(offer.downloadUrl ?? offer.previewUrl),
+          disabled: !document,
           onClick: downloadHandler,
         },
         {
@@ -404,7 +427,7 @@ export default function ComparisonResult() {
         },
       ];
     },
-    [setSelectedOfferId]
+    [documentById, fetchDownloadUrl, fetchPreviewUrl, setSelectedOfferId]
   );
 
   const loadComparison = useCallback(async () => {
@@ -549,15 +572,9 @@ export default function ComparisonResult() {
   }, [activeReference, documents, clear]);
 
   const handleDownloadDocument = useCallback(
-    async (documentId: string) => {
-      const document = documents.find((doc) => doc.id === documentId);
-      if (!document) {
-        toast.error("Nie znaleziono dokumentu do pobrania.");
-        return;
-      }
-
+    async (document: DocumentRow) => {
       try {
-        const signedUrl = await getSignedDownloadUrl(document.file_path);
+        const signedUrl = await fetchDownloadUrl(document);
         const newTab = window.open(signedUrl, "_blank", "noopener");
         if (!newTab) {
           window.location.href = signedUrl;
@@ -569,7 +586,7 @@ export default function ComparisonResult() {
         });
       }
     },
-    [documents],
+    [fetchDownloadUrl],
   );
 
   const handleViewerOpenChange = useCallback(
@@ -964,8 +981,9 @@ export default function ComparisonResult() {
       page={viewerState.page}
       onOpenChange={handleViewerOpenChange}
       onPageChange={handleViewerPageChange}
+      fetchPreviewUrl={fetchPreviewUrl}
       onDownload={(document) => {
-        void handleDownloadDocument(document.id);
+        void handleDownloadDocument(document);
       }}
     />
     </>
