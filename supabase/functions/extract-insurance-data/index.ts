@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { encode as base64Encode, decode as base64Decode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
 import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
 import { parsePdfText, combinePagesText, ParsedPage } from './pdf-parser.ts';
@@ -52,31 +53,20 @@ const requestSchema = z.object({
   document_id: z.string().min(1, "document_id is required"),
 });
 
-function uint8ArrayToBase64(bytes: Uint8Array, chunkSize = 0x8000): string {
+function uint8ArrayToBase64(bytes: Uint8Array): string {
   if (bytes.length === 0) {
     return '';
   }
 
-  const decoder = new TextDecoder('iso-8859-1');
-  let binary = '';
-
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += decoder.decode(chunk);
-  }
-
-  return btoa(binary);
+  return base64Encode(bytes);
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  if (!base64) {
+    return new Uint8Array();
   }
 
-  return bytes;
+  return base64Decode(base64);
 }
 
 async function shrinkImageIfNeeded(
