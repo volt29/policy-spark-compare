@@ -427,8 +427,9 @@ export default function ComparisonResult() {
 
       setComparison(compData);
       setDocuments(docsData ?? []);
-    } catch (error: any) {
-      toast.error("Błąd ładowania porównania", { description: error.message });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Nieznany błąd";
+      toast.error("Błąd ładowania porównania", { description: message });
       navigate("/dashboard");
     } finally {
       setLoading(false);
