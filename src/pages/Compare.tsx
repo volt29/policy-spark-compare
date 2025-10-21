@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
-import { useComparisonFlow } from "@/hooks/useComparisonFlow";
+import { useComparisonFlow, MAX_FILES } from "@/hooks/useComparisonFlow";
 import { toast } from "sonner";
 
 export default function Compare() {
@@ -130,7 +130,7 @@ export default function Compare() {
               <CardHeader>
                 <CardTitle>Prześlij oferty</CardTitle>
                 <CardDescription>
-                  Dodaj od 2 do 5 ofert ubezpieczeniowych (PDF, obrazy)
+                  Dodaj od 2 do {MAX_FILES} ofert ubezpieczeniowych (PDF, obrazy)
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -152,7 +152,7 @@ export default function Compare() {
                       Kliknij aby przesłać lub przeciągnij pliki
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      PDF lub obrazy, maksymalnie 5 plików
+                      PDF lub obrazy, maksymalnie {MAX_FILES} plików
                     </p>
                   </label>
                 </div>
@@ -160,7 +160,7 @@ export default function Compare() {
                 {files.length > 0 && (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-foreground">
-                      Przesłane pliki ({files.length}/5)
+                      Przesłane pliki ({files.length}/{MAX_FILES})
                     </p>
                     {files.map((file, index) => (
                       <div
