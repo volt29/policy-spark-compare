@@ -5,7 +5,7 @@ import {
   type ComparisonStage,
 } from "@/services/comparison-service";
 
-const MAX_FILES = 5;
+export const MAX_FILES = 8;
 const MIN_FILES = 2;
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set([
@@ -61,7 +61,7 @@ export function validateFileSelection(
   if (currentFiles.length + incoming.length > MAX_FILES) {
     return {
       status: "error",
-      message: "Maksymalnie 5 plików",
+      message: `Maksymalnie ${MAX_FILES} plików`,
     };
   }
 

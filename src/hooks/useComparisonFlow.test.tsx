@@ -29,6 +29,7 @@ const {
   executeComparisonRun,
   validateFileSelection,
   validateStartConditions,
+  MAX_FILES,
 } = await import("./useComparisonFlow");
 const { ComparisonServiceError } = await import("../services/comparison-service");
 
@@ -50,11 +51,22 @@ const createFile = (name: string, size = 512, type = "application/pdf") =>
 
 describe("validateFileSelection", () => {
   it("rejects when exceeding max files", () => {
-    const existing = [createFile("a.pdf"), createFile("b.pdf"), createFile("c.pdf"), createFile("d.pdf")];
-    const incoming = [createFile("e.pdf"), createFile("f.pdf")];
+    const existing = [
+      createFile("a.pdf"),
+      createFile("b.pdf"),
+      createFile("c.pdf"),
+      createFile("d.pdf"),
+      createFile("e.pdf"),
+      createFile("f.pdf"),
+      createFile("g.pdf"),
+    ];
+    const incoming = [createFile("h.pdf"), createFile("i.pdf")];
 
     const result = validateFileSelection(existing, incoming);
-    expect(result).toEqual({ status: "error", message: "Maksymalnie 5 plików" });
+    expect(result).toEqual({
+      status: "error",
+      message: `Maksymalnie ${MAX_FILES} plików`,
+    });
   });
 
   it("rejects oversized files", () => {
