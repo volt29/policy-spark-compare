@@ -123,9 +123,9 @@ function extractPaymentSchedule(
 
   const relevantSections = sections.filter((section) =>
     section.type === 'premium' ||
-    section.type === 'base_contract' ||
-    section.type === 'additional_contract' ||
-    section.type === 'unknown'
+    section.type === 'summary' ||
+    section.type === 'contract' ||
+    section.type === 'payment'
   );
 
   for (const section of relevantSections) {
