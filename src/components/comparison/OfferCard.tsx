@@ -5,8 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Shield,
-  Heart,
-  Calendar,
+  CreditCard,
+  Layers,
   TrendingDown,
   Star,
   AlertTriangle,
@@ -16,6 +16,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
+import { getPaymentDisplayInfo } from "@/lib/comparison-utils";
 
 interface OfferCardAnalysisSection {
   sources?: SourceReference[] | null;
@@ -24,7 +25,7 @@ interface OfferCardAnalysisSection {
 interface OfferCardAnalysis {
   price?: OfferCardAnalysisSection;
   coverage?: OfferCardAnalysisSection;
-  assistance?: OfferCardAnalysisSection;
+  payment?: OfferCardAnalysisSection;
 }
 
 export interface OfferCardAction {
@@ -69,16 +70,22 @@ export function OfferCard({
     
   const currency = offer.data?.premium?.currency || 'PLN';
   
-  const ocSum = offer.data?.coverage?.oc?.sum;
-  
-  const assistanceData = unified?.assistance || offer.data?.assistance;
-  const assistanceCount = Array.isArray(assistanceData) ? assistanceData.length : 0;
-  
-  const periodValue = unified?.duration?.variant 
-    ? `${unified.duration.variant} (${calculateMonths(unified.duration.start, unified.duration.end)}m)`
-    : offer.data?.period || '12m';
-  
-  const period: string = typeof periodValue === 'string' ? periodValue : '12m';
+  const paymentInfo = getPaymentDisplayInfo(offer.data);
+  const baseContracts = Array.isArray(unified?.base_contracts) ? unified?.base_contracts : [];
+  const additionalContracts = Array.isArray(unified?.additional_contracts) ? unified?.additional_contracts : [];
+  const assistanceItems = Array.isArray(unified?.assistance) ? unified?.assistance : [];
+  const additionalCount = additionalContracts.length + assistanceItems.length;
+  const rawCoverageSum =
+    (offer.data?.coverage?.oc?.sum ?? offer.data?.coverage?.ac?.sum ?? null) as number | string | null;
+  const coverageLabel = (() => {
+    if (typeof rawCoverageSum === "number" && Number.isFinite(rawCoverageSum)) {
+      return `${rawCoverageSum.toLocaleString("pl-PL")} PLN`;
+    }
+    if (typeof rawCoverageSum === "string" && rawCoverageSum.trim().length > 0) {
+      return rawCoverageSum.trim();
+    }
+    return null;
+  })();
   
   // Show discount info if available
   const hasDiscounts = unified?.discounts && unified.discounts.length > 0;
@@ -154,52 +161,68 @@ export function OfferCard({
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {/* Premium */}
-        <div className="text-center py-4 bg-muted/50 rounded-lg">
+        <div className="py-4 bg-muted/50 rounded-lg space-y-2 text-center">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Wysokość składki
+          </p>
           <SourceTooltip reference={analysis?.price?.sources}>
             <div className="text-4xl font-bold text-primary">
-              {premium ? `${premium.toLocaleString('pl-PL')} ${currency}` : 'Brak danych'}
+              {premium ? `${premium.toLocaleString("pl-PL")} ${currency}` : "—"}
             </div>
           </SourceTooltip>
-          <div className="text-sm text-muted-foreground mt-1">składka miesięczna</div>
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <CreditCard className="w-4 h-4 text-primary" />
+            <span>Płatność:</span>
+            <SourceTooltip reference={analysis?.payment?.sources ?? analysis?.price?.sources}>
+              <span className="font-medium">
+                {paymentInfo.hasData ? paymentInfo.primaryLabel : "—"}
+              </span>
+            </SourceTooltip>
+          </div>
+          {paymentInfo.secondaryLabels.length > 0 && (
+            <div className="text-xs text-muted-foreground">
+              Dostępne opcje: {paymentInfo.secondaryLabels.join(", ")}
+            </div>
+          )}
 
           {hasDiscounts && premiumBefore && premium && premiumBefore > premium && (
-            <div className="text-xs text-muted-foreground mt-2">
-              <span className="line-through">{premiumBefore.toLocaleString('pl-PL')} {currency}</span>
+            <div className="text-xs text-muted-foreground">
+              <span className="line-through">
+                {premiumBefore.toLocaleString("pl-PL")} {currency}
+              </span>
               <span className="text-success ml-2">
-                oszczędzasz {(premiumBefore - premium).toLocaleString('pl-PL')} {currency}
+                oszczędzasz {(premiumBefore - premium).toLocaleString("pl-PL")} {currency}
               </span>
             </div>
           )}
         </div>
 
-        {/* Key Parameters */}
         <div className="space-y-2">
-          {ocSum && (
+          {coverageLabel && (
             <div className="flex items-center gap-2 text-sm">
               <Shield className="w-4 h-4 text-primary" />
-              <span className="text-muted-foreground">OC:</span>
+              <span className="text-muted-foreground">Zakres podstawowy:</span>
               <SourceTooltip reference={analysis?.coverage?.sources}>
-                <span className="font-medium">{ocSum.toLocaleString('pl-PL')} PLN</span>
+                <span className="font-medium">{coverageLabel}</span>
               </SourceTooltip>
             </div>
           )}
 
-          {assistanceCount > 0 && (
+          {baseContracts.length > 0 && (
             <div className="flex items-center gap-2 text-sm">
-              <Heart className="w-4 h-4 text-primary" />
-              <span className="text-muted-foreground">Assistance:</span>
-              <SourceTooltip reference={analysis?.assistance?.sources}>
-                <span className="font-medium">{assistanceCount} usług</span>
-              </SourceTooltip>
+              <Layers className="w-4 h-4 text-primary" />
+              <span className="text-muted-foreground">Umowy podstawowe:</span>
+              <span className="font-medium">{baseContracts.length}</span>
             </div>
           )}
-          
-          <div className="flex items-center gap-2 text-sm">
-            <Calendar className="w-4 h-4 text-primary" />
-            <span className="text-muted-foreground">Okres:</span>
-            <span className="font-medium">{period}</span>
-          </div>
+
+          {additionalCount > 0 && (
+            <div className="flex items-center gap-2 text-sm">
+              <Layers className="w-4 h-4 text-primary" />
+              <span className="text-muted-foreground">Zakres dodatkowy:</span>
+              <span className="font-medium">{additionalCount}</span>
+            </div>
+          )}
         </div>
       </CardContent>
 
@@ -239,17 +262,3 @@ export function OfferCard({
   );
 }
 
-// Helper: Calculate months between two dates
-function calculateMonths(start: string, end: string): number {
-  if (start === 'missing' || end === 'missing') return 12;
-  
-  try {
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    const months = (endDate.getFullYear() - startDate.getFullYear()) * 12 + 
-                   (endDate.getMonth() - startDate.getMonth());
-    return months || 12;
-  } catch {
-    return 12;
-  }
-}
