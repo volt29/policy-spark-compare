@@ -534,24 +534,6 @@ export default function ComparisonResult() {
     } satisfies RecommendedOfferContext;
   }, [comparisonAnalysis]);
 
-  const recommendedContext = useMemo<RecommendedOfferContext | null>(() => {
-    const recommended = comparisonAnalysis?.summary?.recommended_offer;
-    if (!recommended || typeof recommended !== "object") {
-      return null;
-    }
-
-    const record = recommended as Record<string, unknown>;
-    const offerIdValue = record["offer_id"] ?? record["offerId"];
-    const calculationIdValue = record["calculation_id"] ?? record["calculationId"];
-
-    return {
-      offerId: typeof offerIdValue === "string" ? offerIdValue : undefined,
-      calculationId: typeof calculationIdValue === "string" ? calculationIdValue : undefined,
-      insurer: typeof recommended.insurer === "string" ? recommended.insurer : null,
-      name: typeof recommended.name === "string" ? recommended.name : null,
-    } satisfies RecommendedOfferContext;
-  }, [comparisonAnalysis]);
-
   const { badges, bestOfferIndex } = useMemo(
     () => analyzeBestOffers(offers, comparisonAnalysis, recommendedContext),
     [offers, comparisonAnalysis, recommendedContext]
