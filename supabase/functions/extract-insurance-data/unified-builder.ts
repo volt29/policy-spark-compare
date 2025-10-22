@@ -122,10 +122,10 @@ function extractPaymentSchedule(
   }
 
   const relevantSections = sections.filter((section) =>
-    section.type === 'premium' ||
-    section.type === 'summary' ||
-    section.type === 'contract' ||
-    section.type === 'payment'
+    section.type === 'insured' ||
+    section.type === 'base_contract' ||
+    section.type === 'additional_contract' ||
+    section.type === 'unknown'
   );
 
   for (const section of relevantSections) {

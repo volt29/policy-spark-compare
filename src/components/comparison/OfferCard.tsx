@@ -71,9 +71,10 @@ export function OfferCard({
   const currency = offer.data?.premium?.currency || 'PLN';
   
   const paymentInfo = getPaymentDisplayInfo(offer.data);
-  const baseContracts = Array.isArray(unified?.base_contracts) ? unified?.base_contracts : [];
-  const additionalContracts = Array.isArray(unified?.additional_contracts) ? unified?.additional_contracts : [];
-  const assistanceItems = Array.isArray(unified?.assistance) ? unified?.assistance : [];
+  const unifiedRecord = unified as Record<string, unknown> | undefined;
+  const baseContracts = Array.isArray(unifiedRecord?.base_contracts) ? unifiedRecord.base_contracts : [];
+  const additionalContracts = Array.isArray(unifiedRecord?.additional_contracts) ? unifiedRecord.additional_contracts : [];
+  const assistanceItems = Array.isArray(unifiedRecord?.assistance) ? unifiedRecord.assistance : [];
   const additionalCount = additionalContracts.length + assistanceItems.length;
   const rawCoverageSum =
     (offer.data?.coverage?.oc?.sum ?? offer.data?.coverage?.ac?.sum ?? null) as number | string | null;

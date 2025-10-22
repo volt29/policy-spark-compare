@@ -729,7 +729,7 @@ export default function ComparisonResult() {
 
         {/* Tabbed Interface */}
         <Tabs defaultValue="overview" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="w-full">
             <TabsTrigger value="overview" className="gap-2">
               <BarChart3 className="w-4 h-4" />
               Przegląd ofert
