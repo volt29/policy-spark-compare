@@ -671,7 +671,6 @@ export default function ComparisonResult() {
 
     return points.slice(0, 5);
   }, [summaryData, comparisonAnalysis]);
-
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
@@ -715,37 +714,6 @@ export default function ComparisonResult() {
     summaryData?.fallback_text ??
     summaryData?.raw_text ??
     (typeof comparison.summary_text === "string" ? comparison.summary_text : null);
-  const recommendationPoints = useMemo(() => {
-    const points: string[] = [];
-    const addList = (list?: string[] | null) => {
-      if (!list) return;
-      list.forEach((entry) => {
-        if (typeof entry === "string") {
-          const normalized = entry.trim();
-          if (
-            normalized.length > 0 &&
-            !points.some((point) => point.toLowerCase() === normalized.toLowerCase())
-          ) {
-            points.push(normalized);
-          }
-        }
-      });
-    };
-
-    addList(summaryData?.reasons ?? null);
-    const keyHighlights =
-      Array.isArray(comparisonAnalysis.key_highlights)
-        ? (comparisonAnalysis.key_highlights as string[])
-        : null;
-    addList(keyHighlights);
-    const recommendationsList =
-      Array.isArray(comparisonAnalysis.recommendations)
-        ? (comparisonAnalysis.recommendations as string[])
-        : null;
-    addList(recommendationsList);
-
-    return points.slice(0, 5);
-  }, [summaryData, comparisonAnalysis]);
 
   const handleConfirmSelection = () => {
     if (!selectedOffer) return;
