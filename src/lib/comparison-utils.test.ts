@@ -83,6 +83,31 @@ describe("analyzeBestOffers", () => {
     expect(bestOfferIndex).toBe(1);
     expect(badges.get("doc-2")).toContain("lowest-price");
   });
+
+  it("prefers explicit recommended context when available", () => {
+    const offers: ComparisonOffer[] = [
+      createOffer("doc-1", 1100, { calculationId: "calc-1", insurer: "Alpha" }),
+      createOffer("doc-2", 900, { calculationId: "calc-2", insurer: "Beta" }),
+      createOffer("doc-3", 1400, { calculationId: "calc-3", insurer: "Gamma" }),
+    ];
+
+    const analysis = toComparisonAnalysis({
+      price_comparison: {
+        offers: [
+          { offer_id: "calc-2", highlight: "warning" },
+        ],
+      },
+    } as any);
+
+    const { badges, bestOfferIndex } = analyzeBestOffers(offers, analysis, {
+      calculationId: "calc-3",
+      insurer: "Gamma",
+    });
+
+    expect(bestOfferIndex).toBe(2);
+    expect(badges.get("doc-3")).toContain("recommended");
+    expect(badges.get("doc-2")).toContain("warning");
+  });
 });
 
 describe("extractCalculationId", () => {
