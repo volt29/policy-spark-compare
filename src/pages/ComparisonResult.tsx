@@ -18,13 +18,11 @@ import {
   ListChecks,
   CheckCircle2,
   AlertTriangle,
-  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { OfferCard, type OfferCardAction } from "@/components/comparison/OfferCard";
 import { MetricsPanel } from "@/components/comparison/MetricsPanel";
 import { ComparisonTable } from "@/components/comparison/ComparisonTable";
-import { SectionComparisonView } from "@/components/comparison/SectionComparisonView";
 import { SourceTooltip } from "@/components/comparison/SourceTooltip";
 import { DocumentViewerDialog } from "@/components/comparison/DocumentViewerDialog";
 import {
@@ -527,19 +525,13 @@ export default function ComparisonResult() {
   const {
     priceAnalyses,
     coverageAnalyses,
-    assistanceAnalyses,
-    exclusionsAnalyses,
   } = useMemo(() => {
     const priceLookup = createAnalysisLookup(comparisonAnalysis?.price_comparison);
     const coverageLookup = createAnalysisLookup(comparisonAnalysis?.coverage_comparison);
-    const assistanceLookup = createAnalysisLookup(comparisonAnalysis?.assistance_comparison);
-    const exclusionsLookup = createAnalysisLookup(comparisonAnalysis?.exclusions_diff);
 
     return {
       priceAnalyses: offers.map((offer, idx) => findOfferAnalysis(priceLookup, offer, idx)),
       coverageAnalyses: offers.map((offer, idx) => findOfferAnalysis(coverageLookup, offer, idx)),
-      assistanceAnalyses: offers.map((offer, idx) => findOfferAnalysis(assistanceLookup, offer, idx)),
-      exclusionsAnalyses: offers.map((offer, idx) => findOfferAnalysis(exclusionsLookup, offer, idx)),
     };
   }, [comparisonAnalysis, offers]);
 
@@ -685,7 +677,7 @@ export default function ComparisonResult() {
 
         {/* Tabbed Interface */}
         <Tabs defaultValue="overview" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="overview" className="gap-2">
               <BarChart3 className="w-4 h-4" />
               Przegląd ofert
@@ -693,10 +685,6 @@ export default function ComparisonResult() {
             <TabsTrigger value="details" className="gap-2">
               <ListChecks className="w-4 h-4" />
               Szczegółowe porównanie
-            </TabsTrigger>
-            <TabsTrigger value="sections" className="gap-2">
-              <Layers className="w-4 h-4" />
-              Sekcje AI
             </TabsTrigger>
             <TabsTrigger value="ai" className="gap-2">
               <Sparkles className="w-4 h-4" />
@@ -712,17 +700,14 @@ export default function ComparisonResult() {
                 const actions = buildOfferActions(offer, isSelected);
                 const priceSources = priceAnalyses[index]?.sources ?? null;
                 const coverageSources = coverageAnalyses[index]?.sources ?? null;
-                const assistanceSources = assistanceAnalyses[index]?.sources ?? null;
                 const hasAnalysis = Boolean(
                   (priceSources && priceSources.length > 0) ||
-                    (coverageSources && coverageSources.length > 0) ||
-                    (assistanceSources && assistanceSources.length > 0)
+                    (coverageSources && coverageSources.length > 0)
                 );
                 const analysis = hasAnalysis
                   ? {
                       price: priceSources ? { sources: priceSources } : undefined,
                       coverage: coverageSources ? { sources: coverageSources } : undefined,
-                      assistance: assistanceSources ? { sources: assistanceSources } : undefined,
                     }
                   : undefined;
 
@@ -753,18 +738,7 @@ export default function ComparisonResult() {
             />
           </TabsContent>
 
-          {/* Tab 3: AI Sections */}
-          <TabsContent value="sections" className="space-y-6">
-            <SectionComparisonView
-              offers={offers}
-              priceAnalyses={priceAnalyses}
-              coverageAnalyses={coverageAnalyses}
-              assistanceAnalyses={assistanceAnalyses}
-              exclusionsAnalyses={exclusionsAnalyses}
-            />
-          </TabsContent>
-
-          {/* Tab 4: AI Analysis */}
+          {/* Tab 3: AI Analysis */}
           <TabsContent value="ai" className="space-y-6">
             {/* AI Summary */}
             {(hasStructuredSummary || fallbackSummaryText) && (
@@ -903,38 +877,47 @@ export default function ComparisonResult() {
               </Card>
             )}
 
-            {/* Key Highlights */}
-            {comparisonAnalysis.key_highlights && comparisonAnalysis.key_highlights.length > 0 && (
-              <Card className="shadow-elevated">
-                <CardHeader>
-                  <CardTitle>Najważniejsze różnice</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ul className="space-y-3">
-                    {comparisonAnalysis.key_highlights.map((highlight: string, idx: number) => (
-                      <li key={idx} className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50">
-                        <span className="text-primary mt-1 font-bold">•</span>
-                        <span className="flex-1">{highlight}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Recommendations */}
-            {comparisonAnalysis.recommendations && comparisonAnalysis.recommendations.length > 0 && (
+            {/* Combined: Key Differences and Justification */}
+            {((comparisonAnalysis.key_highlights && comparisonAnalysis.key_highlights.length > 0) ||
+              (comparisonAnalysis.recommendations && comparisonAnalysis.recommendations.length > 0) ||
+              (summaryData?.reasons && summaryData.reasons.length > 0)) && (
               <Card className="shadow-elevated border-primary/20">
                 <CardHeader>
-                  <CardTitle>Zalecenia</CardTitle>
-                  <CardDescription>Rekomendacje na podstawie analizy ofert</CardDescription>
+                  <CardTitle>Kluczowe różnice i uzasadnienie</CardTitle>
+                  <CardDescription>
+                    {recommendedOfferTitle
+                      ? `Dlaczego ${recommendedOfferTitle} jest najlepszym wyborem`
+                      : 'Najważniejsze różnice między ofertami'}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
-                    {comparisonAnalysis.recommendations.map((rec: string, idx: number) => (
-                      <li key={idx} className="flex items-start space-x-3 p-3 rounded-lg bg-primary/5">
-                        <span className="text-primary mt-1 font-bold">→</span>
-                        <span className="flex-1">{rec}</span>
+                    {/* Priority 1: Reasons from structured summary */}
+                    {summaryData?.reasons && summaryData.reasons.slice(0, 5).map((reason: string, idx: number) => (
+                      <li key={`reason-${idx}`} className="flex items-start space-x-3 p-3 rounded-lg bg-primary/5">
+                        <CheckCircle2 className="mt-1 h-4 w-4 text-emerald-500 flex-shrink-0" />
+                        <span className="flex-1 text-sm">{reason}</span>
+                      </li>
+                    ))}
+
+                    {/* Priority 2: Key highlights (if reasons don't exist or are few) */}
+                    {comparisonAnalysis.key_highlights &&
+                     (!summaryData?.reasons || summaryData.reasons.length < 3) &&
+                     comparisonAnalysis.key_highlights.slice(0, 5 - (summaryData?.reasons?.length || 0)).map((highlight: string, idx: number) => (
+                      <li key={`highlight-${idx}`} className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50">
+                        <span className="text-primary mt-1 font-bold">•</span>
+                        <span className="flex-1 text-sm">{highlight}</span>
+                      </li>
+                    ))}
+
+                    {/* Priority 3: Recommendations (if space remains) */}
+                    {comparisonAnalysis.recommendations &&
+                     (!summaryData?.reasons || summaryData.reasons.length === 0) &&
+                     (!comparisonAnalysis.key_highlights || comparisonAnalysis.key_highlights.length === 0) &&
+                     comparisonAnalysis.recommendations.slice(0, 5).map((rec: string, idx: number) => (
+                      <li key={`rec-${idx}`} className="flex items-start space-x-3 p-3 rounded-lg bg-primary/5">
+                        <ArrowRight className="mt-1 h-4 w-4 text-primary flex-shrink-0" />
+                        <span className="flex-1 text-sm">{rec}</span>
                       </li>
                     ))}
                   </ul>
