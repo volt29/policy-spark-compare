@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Shield,
+  Heart,
   Calendar,
   TrendingDown,
   Star,
@@ -23,6 +24,7 @@ interface OfferCardAnalysisSection {
 interface OfferCardAnalysis {
   price?: OfferCardAnalysisSection;
   coverage?: OfferCardAnalysisSection;
+  assistance?: OfferCardAnalysisSection;
 }
 
 export interface OfferCardAction {
@@ -68,14 +70,15 @@ export function OfferCard({
   const currency = offer.data?.premium?.currency || 'PLN';
   
   const ocSum = offer.data?.coverage?.oc?.sum;
-
-  // Determine payment cycle
-  const paymentCycle = unified?.payment_cycle || 'missing';
-  const paymentCycleDisplay = paymentCycle === 'miesięczna'
-    ? 'miesięczna'
-    : paymentCycle === 'roczna'
-    ? 'roczna'
-    : '—';
+  
+  const assistanceData = unified?.assistance || offer.data?.assistance;
+  const assistanceCount = Array.isArray(assistanceData) ? assistanceData.length : 0;
+  
+  const periodValue = unified?.duration?.variant 
+    ? `${unified.duration.variant} (${calculateMonths(unified.duration.start, unified.duration.end)}m)`
+    : offer.data?.period || '12m';
+  
+  const period: string = typeof periodValue === 'string' ? periodValue : '12m';
   
   // Show discount info if available
   const hasDiscounts = unified?.discounts && unified.discounts.length > 0;
@@ -182,10 +185,20 @@ export function OfferCard({
             </div>
           )}
 
+          {assistanceCount > 0 && (
+            <div className="flex items-center gap-2 text-sm">
+              <Heart className="w-4 h-4 text-primary" />
+              <span className="text-muted-foreground">Assistance:</span>
+              <SourceTooltip reference={analysis?.assistance?.sources}>
+                <span className="font-medium">{assistanceCount} usług</span>
+              </SourceTooltip>
+            </div>
+          )}
+          
           <div className="flex items-center gap-2 text-sm">
             <Calendar className="w-4 h-4 text-primary" />
-            <span className="text-muted-foreground">Płatność:</span>
-            <span className="font-medium">{paymentCycleDisplay}</span>
+            <span className="text-muted-foreground">Okres:</span>
+            <span className="font-medium">{period}</span>
           </div>
         </div>
       </CardContent>
@@ -224,4 +237,19 @@ export function OfferCard({
       </CardFooter>
     </Card>
   );
+}
+
+// Helper: Calculate months between two dates
+function calculateMonths(start: string, end: string): number {
+  if (start === 'missing' || end === 'missing') return 12;
+  
+  try {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    const months = (endDate.getFullYear() - startDate.getFullYear()) * 12 + 
+                   (endDate.getMonth() - startDate.getMonth());
+    return months || 12;
+  } catch {
+    return 12;
+  }
 }
