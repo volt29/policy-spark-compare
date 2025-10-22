@@ -437,7 +437,7 @@ export const buildComparisonSections = (
   const totalPremiumSource = metadataMap.get("price.total");
   const totalPremiumRow: ComparisonSectionRow = {
     id: "price.total",
-    label: "Składka całkowita",
+    label: "Wysokość składki",
     type: "metric",
     icon: "price",
     analysisLabel: "Analiza AI",
@@ -478,6 +478,41 @@ export const buildComparisonSections = (
   };
   totalPremiumRow.diffStatus = calculateRowDiffStatus(totalPremiumRow.values);
   priceRows.push(totalPremiumRow);
+
+  // Payment cycle row
+  const paymentCycleSource = metadataMap.get("payment.cycle");
+  const paymentCycleRow: ComparisonSectionRow = {
+    id: "payment.cycle",
+    label: "Cykl płatności",
+    type: "metric",
+    icon: "calendar",
+    values: offers.map((offer, idx) => {
+      const unified = offer.data?.unified;
+      const paymentCycle = unified?.payment_cycle || 'missing';
+      const displayValue = paymentCycle === 'miesięczna'
+        ? 'miesięczna'
+        : paymentCycle === 'roczna'
+        ? 'roczna'
+        : null;
+      const sourceEntry = matchSourceEntry(paymentCycleSource, offer, idx);
+
+      return {
+        offerId: offer.id,
+        formattedValue: displayValue,
+        normalizedValue: undefined,
+        rawValue: paymentCycle,
+        tooltip: sourceEntry?.source
+          ? `Źródło: ${sourceEntry.source}`
+          : null,
+        highlight: undefined,
+        aiMessages: [],
+        isMissing: displayValue === null,
+      } satisfies ComparisonValueCell;
+    }),
+    diffStatus: "missing",
+  };
+  paymentCycleRow.diffStatus = calculateRowDiffStatus(paymentCycleRow.values);
+  priceRows.push(paymentCycleRow);
 
   const deltaSource = metadataMap.get("price.delta");
   const deltaRow: ComparisonSectionRow = {
@@ -788,15 +823,7 @@ export const buildComparisonSections = (
     defaultExpanded: true,
   });
 
-  sections.push({
-    id: "assistance",
-    title: "Assistance",
-    icon: "assistance",
-    rows: assistanceRows,
-    diffStatus: sectionStatus(assistanceRows),
-    sources: assistanceSources,
-    defaultExpanded: false,
-  });
+  // Assistance section removed as per requirements
 
   sections.push({
     id: "exclusions",

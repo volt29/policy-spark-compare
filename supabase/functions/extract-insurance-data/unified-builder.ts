@@ -77,6 +77,7 @@ export interface UnifiedOffer {
     end: string;
     variant: string;
   };
+  payment_cycle: 'miesięczna' | 'roczna' | 'missing';
   notes: string[];
   missing_fields: string[];
   extraction_confidence: 'high' | 'medium' | 'low';
@@ -168,6 +169,12 @@ export function buildUnifiedOffer(
   const duration = extractDuration(sections, aiExtractedData);
   registerSources('duration', 'duration');
 
+  // Infer payment cycle
+  const paymentCycle = inferPaymentCycle(duration, aiExtractedData);
+  if (paymentCycle === 'missing') {
+    missingFields.push('payment_cycle');
+  }
+
   // Extract notes
   const notes = extractNotes(sections, aiExtractedData);
 
@@ -176,6 +183,7 @@ export function buildUnifiedOffer(
 
   console.log(`✅ Builder: Offer structure complete (confidence: ${extractionConfidence})`);
   console.log(`📋 Missing fields: ${missingFields.length > 0 ? missingFields.join(', ') : 'none'}`);
+  console.log(`💳 Payment cycle: ${paymentCycle}`);
 
   const offer: UnifiedOffer = {
     offer_id: offerId,
@@ -189,6 +197,7 @@ export function buildUnifiedOffer(
     assistance,
     exclusions,
     duration,
+    payment_cycle: paymentCycle,
     notes,
     missing_fields: missingFields,
     extraction_confidence: extractionConfidence
@@ -535,6 +544,46 @@ function extractDuration(sections: ParsedSection[], aiData: any): UnifiedOffer['
     end: aiData?.valid_to || aiData?.duration?.end || 'missing',
     variant: aiData?.duration?.variant || 'standardowy'
   };
+}
+
+function inferPaymentCycle(duration: UnifiedOffer['duration'], aiData: any): 'miesięczna' | 'roczna' | 'missing' {
+  // Try explicit AI data first
+  if (aiData?.payment_cycle) {
+    const normalized = String(aiData.payment_cycle).toLowerCase();
+    if (normalized.includes('miesięcz') || normalized.includes('monthly')) return 'miesięczna';
+    if (normalized.includes('roczn') || normalized.includes('annual') || normalized.includes('yearly')) return 'roczna';
+  }
+
+  // Try to infer from duration variant
+  if (duration.variant && duration.variant !== 'missing') {
+    const variant = duration.variant.toLowerCase();
+    if (variant.includes('miesięcz') || variant.includes('monthly') || variant.includes('1 month')) {
+      return 'miesięczna';
+    }
+    if (variant.includes('roczn') || variant.includes('annual') || variant.includes('yearly') ||
+        variant.includes('12 month') || variant.includes('rok')) {
+      return 'roczna';
+    }
+  }
+
+  // Try to calculate from start/end dates
+  if (duration.start !== 'missing' && duration.end !== 'missing') {
+    try {
+      const start = new Date(duration.start);
+      const end = new Date(duration.end);
+      if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
+        const diffMonths = (end.getFullYear() - start.getFullYear()) * 12 +
+                          (end.getMonth() - start.getMonth());
+
+        if (diffMonths <= 2) return 'miesięczna';
+        if (diffMonths >= 11) return 'roczna';
+      }
+    } catch {
+      // Parsing failed, continue to fallback
+    }
+  }
+
+  return 'missing';
 }
 
 function extractNotes(sections: ParsedSection[], aiData: any): string[] {
