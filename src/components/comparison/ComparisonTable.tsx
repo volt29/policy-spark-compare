@@ -26,7 +26,6 @@ import {
   Shield,
   Building2,
   Sparkles,
-  Calendar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComparisonOffer } from "@/lib/comparison-utils";
@@ -71,7 +70,6 @@ const ROW_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> 
   percent: Percent,
   assistance: Heart,
   alert: AlertCircle,
-  calendar: Calendar,
 };
 
 const DIFF_BADGE_LABEL: Record<ComparisonDiffStatus, string> = {
@@ -321,7 +319,7 @@ export function ComparisonTable({
                 <TableCell className="font-medium">
                   <div className="flex items-center gap-2">
                     <DollarSign className="w-4 h-4 text-primary" />
-                    Wysokość składki
+                    Składka miesięczna
                   </div>
                 </TableCell>
                 {offers.map((offer, idx) => {

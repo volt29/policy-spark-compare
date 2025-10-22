@@ -28,7 +28,6 @@ export interface ExtractedOfferData {
       end?: string | "missing" | null;
       variant?: string | null;
     } | null;
-    payment_cycle?: "miesięczna" | "roczna" | "missing" | null;
     discounts?: Array<unknown> | null;
   } | null;
   assistance?: Array<string | { name?: string }> | null;
