@@ -58,7 +58,9 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
     return '';
   }
 
-  return base64Encode(bytes);
+  // Convert Uint8Array to ArrayBuffer for base64Encode
+  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return base64Encode(arrayBuffer);
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -94,7 +96,9 @@ async function shrinkImageIfNeeded(
 
   const extension = mimeType.split('/')[1] || 'image';
   const formData = new FormData();
-  const blob = new Blob([bytes], { type: mimeType });
+  // Extract ArrayBuffer from Uint8Array for Blob
+  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const blob = new Blob([arrayBuffer], { type: mimeType });
   formData.append('File', blob, `image.${extension}`);
   formData.append('ImageResolution', '150');
   formData.append('JpgQuality', '70');

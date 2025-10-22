@@ -332,6 +332,46 @@ export default function ComparisonResult() {
   );
   const { activeReference, clear } = useDocumentViewer();
 
+  // Load comparison data
+  const loadComparison = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data: compData, error: compError } = await supabase
+        .from("comparisons")
+        .select("*")
+        .eq("id", id)
+        .single();
+
+      if (compError) throw compError;
+
+      const { data: docsData, error: docsError } = await supabase
+        .from("documents")
+        .select("*")
+        .in("id", compData.document_ids);
+
+      if (docsError) throw docsError;
+
+      setComparison(compData);
+      setDocuments(docsData ?? []);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Nieznany błąd";
+      toast.error("Błąd ładowania porównania", { description: message });
+      navigate("/dashboard");
+    } finally {
+      setLoading(false);
+    }
+  }, [id, navigate]);
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/auth");
+      return;
+    }
+
+    void loadComparison();
+  }, [user, navigate, loadComparison]);
+
+  // Memoized data that doesn't depend on comparison data
   const documentById = useMemo(() => {
     const map = new Map<string, DocumentRow>();
     documents.forEach((doc) => {
@@ -339,6 +379,8 @@ export default function ComparisonResult() {
     });
     return map;
   }, [documents]);
+
+  const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
 
   const fetchPreviewUrl = useCallback(
     (document: DocumentRow) => signedUrlCache.getPreviewUrl(document.file_path),
@@ -429,44 +471,7 @@ export default function ComparisonResult() {
     [documentById, fetchDownloadUrl, fetchPreviewUrl, setSelectedOfferId]
   );
 
-  const loadComparison = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { data: compData, error: compError } = await supabase
-        .from("comparisons")
-        .select("*")
-        .eq("id", id)
-        .single();
-
-      if (compError) throw compError;
-
-      const { data: docsData, error: docsError } = await supabase
-        .from("documents")
-        .select("*")
-        .in("id", compData.document_ids);
-
-      if (docsError) throw docsError;
-
-      setComparison(compData);
-      setDocuments(docsData ?? []);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Nieznany błąd";
-      toast.error("Błąd ładowania porównania", { description: message });
-      navigate("/dashboard");
-    } finally {
-      setLoading(false);
-    }
-  }, [id, navigate]);
-
-  useEffect(() => {
-    if (!user) {
-      navigate("/auth");
-      return;
-    }
-
-    void loadComparison();
-  }, [user, navigate, loadComparison]);
-
+  // All memoized computations that depend on comparison data
   const comparisonAnalysis = useMemo(
     () =>
       comparison
@@ -510,8 +515,6 @@ export default function ComparisonResult() {
 
     return hasRecommendedOffer || hasKeyNumbers || hasReasons || hasRisks || hasNextSteps;
   }, [comparisonAnalysis]);
-
-  const offers = useMemo<ComparisonOffer[]>(() => mapDocumentsToOffers(documents), [documents]);
 
   const recommendedContext = useMemo<RecommendedOfferContext | null>(() => {
     const recommended = comparisonAnalysis?.summary?.recommended_offer;
@@ -617,6 +620,7 @@ export default function ComparisonResult() {
     setViewerState((prev) => ({ ...prev, page: clampPageNumber(page) }));
   }, []);
 
+  // Early returns AFTER all hooks are defined
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">

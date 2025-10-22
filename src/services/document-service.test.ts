@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { beforeEach, describe, expect, it } from "bun:test";
 import { supabase } from "@/integrations/supabase/client";
 import {
