@@ -19,7 +19,6 @@ import {
   AlertCircle,
   ChevronDown,
   DollarSign,
-  FileWarning,
   Heart,
   Info,
   Percent,
@@ -40,6 +39,8 @@ import {
 import { usePersistentSectionState } from "@/hooks/usePersistentSectionState";
 import { ArrowDown } from "lucide-react";
 import { formatCurrency } from "@/lib/valueFormatters";
+import { SourceTooltip } from "@/components/comparison/SourceTooltip";
+import { segmentTextWithLinks } from "@/lib/safeLinks";
 
 const HIGHLIGHT_CELL_CLASSES: Record<Exclude<HighlightTone, "neutral" | undefined>, string> = {
   best: "bg-emerald-50 border-l-4 border-emerald-400 dark:bg-emerald-900/30 dark:border-emerald-700",
@@ -181,6 +182,40 @@ export function ComparisonTable({
   const priceRow = useMemo(() => priceSection?.rows.find((r) => r.id === 'price.total'), [priceSection]);
   const priceAnalyses = useMemo(() => priceRow?.values ?? [], [priceRow]);
 
+  const renderSegments = (text: string, keyPrefix: string) =>
+    segmentTextWithLinks(text).map((segment, idx) => {
+      const key = `${keyPrefix}-${idx}`;
+      if (segment.type === "link") {
+        if (segment.safe) {
+          return (
+            <a
+              key={key}
+              href={segment.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline decoration-dotted underline-offset-4"
+            >
+              {segment.value}
+            </a>
+          );
+        }
+        return (
+          <span key={key} className="text-destructive" title={segment.reason ?? "Link oznaczony jako niebezpieczny"}>
+            {segment.value}
+          </span>
+        );
+      }
+      return (
+        <Fragment key={key}>{segment.value}</Fragment>
+      );
+    });
+
+  const renderLine = (line: string, lineIndex: number) => (
+    <span key={`line-${lineIndex}`} className="block font-medium">
+      {renderSegments(line, `segment-${lineIndex}`)}
+    </span>
+  );
+
   const renderValueContent = (
     cell: ComparisonValueCell,
     row: ComparisonSectionRow,
@@ -196,7 +231,7 @@ export function ComparisonTable({
             {cell.items.map((item, idx) => (
               <li key={idx} className="flex items-start gap-2">
                 <span className="mt-1 h-1.5 w-1.5 rounded-full bg-primary/60" />
-                <span>{item}</span>
+                <span>{renderSegments(item, `list-${row.id}-${idx}`)}</span>
               </li>
             ))}
           </ul>
@@ -204,31 +239,19 @@ export function ComparisonTable({
       }
 
       if (cell.formattedValue) {
-        const text = cell.formattedValue.split("\n").map((part, idx) => (
-          <span key={idx} className="block font-medium">
-            {part}
-          </span>
-        ));
-        return <div className="space-y-1 text-sm leading-relaxed">{text}</div>;
+        const lines = cell.formattedValue.split("\n");
+        const renderedLines = lines.map((part, idx) => renderLine(part, idx));
+        return <div className="space-y-1 text-sm leading-relaxed">{renderedLines}</div>;
       }
 
       return null;
     })();
 
     if (!valueContent) {
-      return (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <FileWarning className="h-4 w-4" />
-          Brak danych
-        </div>
-      );
+      return <span className="text-sm text-muted-foreground">—</span>;
     }
 
-    if (!hasTooltip) {
-      return valueContent;
-    }
-
-    return (
+    const contentWithTooltip = hasTooltip ? (
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex items-start gap-2">
@@ -240,7 +263,19 @@ export function ComparisonTable({
           {cell.tooltip}
         </TooltipContent>
       </Tooltip>
+    ) : (
+      valueContent
     );
+
+    if (cell.sourceReferences && cell.sourceReferences.length > 0) {
+      return (
+        <SourceTooltip reference={cell.sourceReferences}>
+          {contentWithTooltip}
+        </SourceTooltip>
+      );
+    }
+
+    return contentWithTooltip;
   };
 
   const renderAiBlock = (cell: ComparisonValueCell, row: ComparisonSectionRow) => {

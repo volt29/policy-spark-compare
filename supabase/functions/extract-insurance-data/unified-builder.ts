@@ -30,6 +30,122 @@ function parseNumberValue(value: unknown): number | null {
   return null;
 }
 
+const PAYMENT_KEYWORDS: Array<{ pattern: RegExp; cycle: PaymentCycle }> = [
+  { pattern: /(miesi[aą]c|co\s+miesi[aą]c|monthly|12\s*rat)/i, cycle: 'monthly' },
+  { pattern: /(roczn|co\s+rok|annual|yearly|12\s*miesi[aą]cy)/i, cycle: 'annual' },
+  { pattern: /(kwarta|quarter)/i, cycle: 'quarterly' },
+  { pattern: /(półroc|semi-?annual|co\s+pół\s+roku)/i, cycle: 'semiannual' },
+  { pattern: /(jednoraz|z\s+góry|single\s+payment)/i, cycle: 'single' }
+];
+
+const extractStrings = (value: unknown): string[] => {
+  if (!value) return [];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => extractStrings(entry));
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keysToInspect = [
+      'frequency',
+      'frequencies',
+      'cycle',
+      'cycles',
+      'option',
+      'options',
+      'billing_period',
+      'payment_frequency',
+      'paymentCycle',
+      'paymentSchedule',
+      'plan',
+      'type',
+      'label'
+    ];
+    return keysToInspect.flatMap((key) => extractStrings(record[key]));
+  }
+  return [];
+};
+
+const detectPaymentCycle = (value: string): PaymentCycle | null => {
+  for (const entry of PAYMENT_KEYWORDS) {
+    if (entry.pattern.test(value)) {
+      return entry.cycle;
+    }
+  }
+  return null;
+};
+
+function extractPaymentSchedule(
+  sections: ParsedSection[],
+  aiData: any
+): { normalized_cycles: PaymentCycle[]; raw_mentions: string[] } {
+  const normalized = new Set<PaymentCycle>();
+  const rawMentions = new Set<string>();
+
+  const considerValue = (value: string) => {
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (!cleaned) {
+      return;
+    }
+    rawMentions.add(cleaned);
+    const detected = detectPaymentCycle(cleaned.toLowerCase());
+    if (detected) {
+      normalized.add(detected);
+    }
+  };
+
+  const aiCandidates: unknown[] = [
+    aiData?.payment_frequency,
+    aiData?.payment?.frequency,
+    aiData?.payment?.frequencies,
+    aiData?.payment?.cycles,
+    aiData?.payment?.options,
+    aiData?.payment?.plans,
+    aiData?.premium?.payment_frequency,
+    aiData?.premium?.payment_schedule,
+    aiData?.premium?.billing_period,
+    aiData?.premium?.plan,
+    aiData?.billing_cycle,
+    aiData?.billingFrequency,
+    aiData?.paymentCycle,
+    aiData?.payment_schedule,
+    aiData?.paymentPlan,
+  ];
+
+  for (const candidate of aiCandidates) {
+    for (const text of extractStrings(candidate)) {
+      considerValue(text);
+    }
+  }
+
+  const relevantSections = sections.filter((section) =>
+    section.type === 'premium' ||
+    section.type === 'summary' ||
+    section.type === 'contract' ||
+    section.type === 'payment'
+  );
+
+  for (const section of relevantSections) {
+    const lines = section.content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) =>
+        line.length > 0 &&
+        /(płatno|rat|składk|opłat|rata)/i.test(line)
+      );
+
+    lines.forEach(considerValue);
+  }
+
+  return {
+    normalized_cycles: Array.from(normalized),
+    raw_mentions: Array.from(rawMentions).slice(0, 10),
+  };
+}
+
 export interface UnifiedOffer {
   offer_id: string;
   source_document: string;
@@ -59,6 +175,10 @@ export interface UnifiedOffer {
   discounts: string[];
   total_premium_before_discounts: number | 'missing';
   total_premium_after_discounts: number | 'missing';
+  payment_schedule: {
+    normalized_cycles: PaymentCycle[];
+    raw_mentions: string[];
+  };
   assistance: Array<{
     name: string;
     coverage: string;
@@ -81,6 +201,8 @@ export interface UnifiedOffer {
   missing_fields: string[];
   extraction_confidence: 'high' | 'medium' | 'low';
 }
+
+export type PaymentCycle = 'monthly' | 'annual' | 'quarterly' | 'semiannual' | 'single';
 
 export interface UnifiedOfferSourceEntry {
   category: string;
@@ -156,6 +278,8 @@ export function buildUnifiedOffer(
   // Extract premiums
   const { beforeDiscounts, afterDiscounts } = extractPremiums(sections, aiExtractedData, missingFields);
   registerSources('premium', 'premiums');
+  const paymentSchedule = extractPaymentSchedule(sections, aiExtractedData);
+  registerSources('premium', 'payment_schedule');
 
   // Build assistance array
   const assistance = buildAssistanceArray(sections, aiExtractedData);
@@ -186,6 +310,7 @@ export function buildUnifiedOffer(
     discounts,
     total_premium_before_discounts: beforeDiscounts,
     total_premium_after_discounts: afterDiscounts,
+    payment_schedule: paymentSchedule,
     assistance,
     exclusions,
     duration,
