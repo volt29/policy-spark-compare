@@ -1,5 +1,4 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { encode as base64Encode, decode as base64Decode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
 import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
 import { parsePdfText, combinePagesText, ParsedPage } from './pdf-parser.ts';
@@ -13,8 +12,6 @@ import {
 import { buildUnifiedOffer, UnifiedOfferBuildResult } from './unified-builder.ts';
 
 type LovableContentBlock = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
-
-const IMAGE_PAYLOAD_TARGET_BYTES = 4 * 1024 * 1024; // 4 MB safety window before hard 6 MB limit
 
 const allowedOrigins = (Deno.env.get("CORS_ALLOWED_ORIGINS") || "")
   .split(",")
@@ -52,101 +49,6 @@ const createCorsHeaders = (origin: string | null) => {
 const requestSchema = z.object({
   document_id: z.string().min(1, "document_id is required"),
 });
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  if (bytes.length === 0) {
-    return '';
-  }
-
-  // Convert Uint8Array to ArrayBuffer for base64Encode
-  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  return base64Encode(arrayBuffer);
-}
-
-function base64ToUint8Array(base64: string): Uint8Array {
-  if (!base64) {
-    return new Uint8Array();
-  }
-
-  return base64Decode(base64);
-}
-
-async function shrinkImageIfNeeded(
-  bytes: Uint8Array,
-  mimeType: string,
-  maxBytes: number = IMAGE_PAYLOAD_TARGET_BYTES
-): Promise<{ bytes: Uint8Array; mimeType: string; warning?: string }> {
-  if (bytes.length <= maxBytes) {
-    return { bytes, mimeType };
-  }
-
-  const convertApiSecret = Deno.env.get('CONVERTAPI_SECRET');
-  console.warn(
-    `⚠️ Image payload ${(bytes.length / (1024 * 1024)).toFixed(2)}MB exceeds ${(maxBytes / (1024 * 1024)).toFixed(2)}MB target. Attempting compression.`
-  );
-
-  if (!convertApiSecret) {
-    console.warn('⚠️ Cannot shrink image - CONVERTAPI_SECRET missing.');
-    return {
-      bytes,
-      mimeType,
-      warning: 'Image exceeds recommended size and compression was skipped due to missing CONVERTAPI_SECRET.'
-    };
-  }
-
-  const extension = mimeType.split('/')[1] || 'image';
-  const formData = new FormData();
-  // Extract ArrayBuffer from Uint8Array for Blob
-  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const blob = new Blob([arrayBuffer], { type: mimeType });
-  formData.append('File', blob, `image.${extension}`);
-  formData.append('ImageResolution', '150');
-  formData.append('JpgQuality', '70');
-
-  const response = await fetch(
-    `https://v2.convertapi.com/convert/${extension}/to/jpg?Secret=${convertApiSecret}`,
-    {
-      method: 'POST',
-      body: formData
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('❌ Image compression failed:', errorText);
-    return {
-      bytes,
-      mimeType,
-      warning: 'Image compression attempt failed; using original bytes.'
-    };
-  }
-
-  const result = await response.json();
-
-  if (!result.Files || !Array.isArray(result.Files) || !result.Files[0]?.FileData) {
-    console.error('❌ Image compression response invalid:', result);
-    return {
-      bytes,
-      mimeType,
-      warning: 'Image compression response invalid; using original bytes.'
-    };
-  }
-
-  const compressedBytes = base64ToUint8Array(result.Files[0].FileData);
-  console.log(
-    '🛠️ Image compressed via ConvertAPI',
-    {
-      beforeMB: (bytes.length / (1024 * 1024)).toFixed(2),
-      afterMB: (compressedBytes.length / (1024 * 1024)).toFixed(2)
-    }
-  );
-
-  return {
-    bytes: compressedBytes,
-    mimeType: 'image/jpeg',
-    warning: 'Image was recompressed to JPEG to fit payload recommendations.'
-  };
-}
 
 const LOVABLE_SYSTEM_PROMPT = `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych.
 Ekstrahuj informacje zgodnie z zunifikowanym schematem:
@@ -622,6 +524,15 @@ serve(async (req) => {
       file_path: document.file_path
     });
 
+    const mimeType = document.mime_type ?? 'application/pdf';
+    if (mimeType !== 'application/pdf') {
+      console.warn(`❌ Unsupported MIME type requested: ${mimeType}`);
+      return new Response(
+        JSON.stringify({ error: 'Only PDF documents are supported' }),
+        { status: 415, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Update status to processing
     await supabase
       .from('documents')
@@ -646,8 +557,6 @@ serve(async (req) => {
     
     const fileSizeMB = bytes.length / (1024 * 1024);
     console.log(`✅ Step 10: File size: ${fileSizeMB.toFixed(2)}MB`);
-    
-    const mimeType = document.mime_type || 'application/pdf';
     
     // Step 1: Try to extract text from PDF
     let parsedText = '';
@@ -738,41 +647,6 @@ serve(async (req) => {
           console.log(`✅ Step 14: Prepared ${base64Pages.length} image(s) as base64 data URLs (text extraction failed)`);
         }
       
-    } else if (['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
-      console.log('✅ Step 11: Detected image format, using base64...');
-      console.log('📝 Step 11a: Raw image byte length', bytes.length);
-
-      const { bytes: preparedBytes, mimeType: preparedMimeType, warning } = await shrinkImageIfNeeded(bytes, mimeType);
-
-      if (warning) {
-        console.warn(`⚠️ Image preprocessing warning: ${warning}`);
-      }
-
-      if (preparedBytes !== bytes) {
-        console.log(
-          '🛠️ Step 11b: Image bytes adjusted',
-          {
-            beforeMB: (bytes.length / (1024 * 1024)).toFixed(2),
-            afterMB: (preparedBytes.length / (1024 * 1024)).toFixed(2)
-          }
-        );
-      }
-
-      if (preparedBytes.length > 6 * 1024 * 1024) {
-        throw new Error('Image file too large (max 6MB). Please reduce file size.');
-      }
-
-      const base64 = uint8ArrayToBase64(preparedBytes);
-      console.log('📝 Step 11c: Base64 payload length', base64.length);
-
-      imageContent.push({
-        type: 'image_url',
-        image_url: { url: `data:${preparedMimeType};base64,${base64}` }
-      });
-
-      previewImage = base64;
-
-      console.log('✅ Step 12: Image prepared as base64');
     } else {
       throw new Error(`Unsupported file type: ${mimeType}`);
     }

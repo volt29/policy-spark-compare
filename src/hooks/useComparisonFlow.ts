@@ -8,12 +8,7 @@ import {
 export const MAX_FILES = 8;
 const MIN_FILES = 2;
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
-const ALLOWED_MIME_TYPES = new Set([
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
+const ALLOWED_MIME_TYPES = new Set(["application/pdf"]);
 
 const STAGE_MESSAGES: Record<ComparisonStage, string> = {
   uploading_files: "Przesyłanie plików...",
@@ -79,7 +74,7 @@ export function validateFileSelection(
     return {
       status: "error",
       message: "Nieprawidłowy format",
-      description: "Akceptowane formaty: PDF, JPG, PNG, WEBP",
+      description: "Akceptowany format: PDF",
     };
   }
 
