@@ -130,7 +130,7 @@ export default function Compare() {
               <CardHeader>
                 <CardTitle>Prześlij oferty</CardTitle>
                 <CardDescription>
-                  Dodaj od 2 do {MAX_FILES} ofert ubezpieczeniowych (PDF, obrazy)
+                  Dodaj od 2 do {MAX_FILES} ofert ubezpieczeniowych w formacie PDF
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -138,7 +138,7 @@ export default function Compare() {
                   <Input
                     id="file-upload"
                     type="file"
-                    accept=".pdf,image/*"
+                    accept=".pdf"
                     multiple
                     onChange={handleFileUpload}
                     className="hidden"
@@ -149,10 +149,10 @@ export default function Compare() {
                   >
                     <Upload className="h-12 w-12 text-muted-foreground mb-4" />
                     <p className="text-sm font-medium text-foreground mb-1">
-                      Kliknij aby przesłać lub przeciągnij pliki
+                      Kliknij aby przesłać lub przeciągnij pliki PDF
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      PDF lub obrazy, maksymalnie {MAX_FILES} plików
+                      Wyłącznie PDF, maksymalnie {MAX_FILES} plików
                     </p>
                   </label>
                 </div>

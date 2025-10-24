@@ -86,7 +86,7 @@ describe("validateFileSelection", () => {
     expect(result).toEqual({
       status: "error",
       message: "Nieprawidłowy format",
-      description: "Akceptowane formaty: PDF, JPG, PNG, WEBP",
+      description: "Akceptowany format: PDF",
     });
   });
 
