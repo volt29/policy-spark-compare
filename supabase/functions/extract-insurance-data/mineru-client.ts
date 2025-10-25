@@ -120,11 +120,46 @@ export class MineruClient {
   }
 
   private buildUrl(path: string): string {
-    if (!path.startsWith("/")) {
-      path = `/${path}`;
+    const normalizedPath = path.replace(/^\/+/, '');
+
+    if (!normalizedPath) {
+      return this.baseUrl;
     }
 
-    return `${this.baseUrl}${path}`;
+    try {
+      const base = new URL(this.baseUrl);
+      const baseSegments = base.pathname.split('/').filter(Boolean);
+      const pathSegments = normalizedPath.split('/').filter(Boolean);
+
+      let overlap = 0;
+      const maxOverlap = Math.min(baseSegments.length, pathSegments.length);
+
+      for (let i = 1; i <= maxOverlap; i++) {
+        let match = true;
+
+        for (let j = 0; j < i; j++) {
+          const baseSegment = baseSegments[baseSegments.length - i + j];
+          const pathSegment = pathSegments[j];
+
+          if (!baseSegment || baseSegment.toLowerCase() !== pathSegment.toLowerCase()) {
+            match = false;
+            break;
+          }
+        }
+
+        if (match) {
+          overlap = i;
+        }
+      }
+
+      const combinedSegments = [...baseSegments, ...pathSegments.slice(overlap)];
+      base.pathname = `/${combinedSegments.join('/')}`;
+
+      return base.toString();
+    } catch {
+      const trimmedBase = this.baseUrl.replace(/\/+$/, '');
+      return `${trimmedBase}/${normalizedPath}`;
+    }
   }
 
   private buildHeaders(additional?: HeadersLike): Headers {
