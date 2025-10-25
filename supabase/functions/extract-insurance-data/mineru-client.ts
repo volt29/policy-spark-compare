@@ -68,6 +68,14 @@ export interface MineruSegmentationResult {
   sources: SectionSource[];
 }
 
+function upgradeLegacyMineruDomain(url: string): string {
+  if (/^https?:\/\/[^/]*mineru\.net/i.test(url)) {
+    return url.replace(/mineru\.net/i, "mineru.com");
+  }
+
+  return url;
+}
+
 function sanitizeBaseUrl(url: string): string {
   return url.replace(/\/$/, "");
 }
@@ -75,7 +83,7 @@ function sanitizeBaseUrl(url: string): string {
 function pickBaseUrl(baseUrl?: string): string {
   const envOverride = Deno.env.get("MINERU_API_URL")?.trim();
   const candidate = baseUrl?.trim() || envOverride || DEFAULT_MINERU_BASE_URL;
-  return sanitizeBaseUrl(candidate);
+  return sanitizeBaseUrl(upgradeLegacyMineruDomain(candidate));
 }
 
 export interface MineruClientOptions {
