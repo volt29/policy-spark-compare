@@ -5,7 +5,7 @@ import {
   SectionType,
 } from './classifier.ts';
 
-const DEFAULT_MINERU_BASE_URL = "https://api.mineru.net" as const;
+const DEFAULT_MINERU_BASE_URL = "https://api.mineru.com" as const;
 
 type FetchImpl = typeof fetch;
 
