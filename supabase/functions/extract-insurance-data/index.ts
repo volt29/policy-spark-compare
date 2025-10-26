@@ -454,28 +454,19 @@ serve(async (req) => {
 
     console.log('✅ Step 9: Status updated to processing');
 
-    // Download file from storage
-    const { data: fileData, error: downloadError } = await supabase.storage
+    // Generate signed URL for MinerU extraction
+    const { data: signedUrlData, error: signedUrlError } = await supabase.storage
       .from('insurance-documents')
-      .download(document.file_path);
+      .createSignedUrl(document.file_path, 60 * 15);
 
-    if (downloadError) {
-      throw new Error(`Failed to download file: ${downloadError.message}`);
-    }
-    
-    console.log('✅ Step 9: File downloaded from storage');
-
-    const arrayBuffer = await fileData.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    
-    const fileSizeMB = bytes.length / (1024 * 1024);
-    console.log(`✅ Step 10: File size: ${fileSizeMB.toFixed(2)}MB`);
-    
-    if (mimeType !== 'application/pdf') {
-      throw new Error(`Unsupported file type: ${mimeType}`);
+    if (signedUrlError || !signedUrlData?.signedUrl) {
+      throw new Error(`Failed to generate signed URL: ${signedUrlError?.message ?? 'unknown error'}`);
     }
 
-    console.log('✅ Step 11: Using MinerU for document understanding...');
+    const signedUrl = signedUrlData.signedUrl;
+    console.log('✅ Step 9: Signed URL generated for MinerU task');
+
+    console.log('✅ Step 10: Using MinerU for asynchronous document extraction...');
 
     const mineruApiKey = Deno.env.get('MINERU_API_KEY');
     if (!mineruApiKey) {
@@ -494,23 +485,21 @@ serve(async (req) => {
 
     try {
       const analysis = await mineruClient.analyzeDocument({
-        bytes,
-        mimeType,
+        signedUrl,
         documentId: document_id,
-        fileName: document.file_name ?? document.original_name ?? 'document.pdf',
       });
 
       mineruPages = analysis.pages;
       mineruText = analysis.text;
       mineruStructureSummary = analysis.structureSummary;
-      console.log('✅ MinerU: extracted', {
+      console.log('✅ MinerU: task completed', {
         pages: mineruPages.length,
         characters: mineruText.length,
         confidence: mineruStructureSummary?.confidence
       });
     } catch (mineruError) {
       if (mineruError instanceof MineruHttpError) {
-        console.error('❌ MinerU analysis failed', {
+        console.error('❌ MinerU extraction failed', {
           status: mineruError.status,
           endpoint: mineruError.endpoint,
           hint: mineruError.hint,
@@ -519,7 +508,7 @@ serve(async (req) => {
       }
 
       const message = mineruError instanceof Error ? mineruError.message : String(mineruError);
-      console.error('❌ MinerU analysis failed', message);
+      console.error('❌ MinerU extraction failed', message);
       throw new Error(`MinerU extraction failed: ${message}`);
     }
 

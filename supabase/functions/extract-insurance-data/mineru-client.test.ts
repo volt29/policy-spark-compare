@@ -1,134 +1,308 @@
 import { describe, expect, it } from "bun:test";
 import { MineruClient, MineruHttpError } from "./mineru-client";
 
-const DUMMY_BYTES = new Uint8Array([0x01]);
+type FetchCall = {
+  url: string;
+  init?: RequestInit;
+};
 
-function createFetchRecorder(expectedResponse: Record<string, unknown>) {
-  let lastUrl: string | null = null;
+function createFetchSequence(
+  handlers: Array<(input: RequestInfo | URL, init: RequestInit | undefined, index: number) => Promise<Response> | Response>,
+) {
+  const calls: FetchCall[] = [];
 
   const fetchStub: typeof fetch = async (input, init) => {
-    void init;
-    lastUrl = typeof input === "string"
+    const index = calls.length;
+    const handler = handlers[index];
+
+    if (!handler) {
+      throw new Error(`Unexpected fetch call #${index + 1}`);
+    }
+
+    const url = typeof input === "string"
       ? input
       : input instanceof URL
         ? input.toString()
-        : String(input);
+        : "url" in input
+          ? input.url
+          : String(input);
 
-    return new Response(JSON.stringify(expectedResponse), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    calls.push({ url, init });
+
+    return await handler(input, init, index);
   };
 
-  return {
-    fetchStub,
-    getLastUrl: () => lastUrl,
-  };
+  return { fetchStub, calls };
 }
 
-const EMPTY_RESPONSE = {
-  data: {
-    pages: [],
-    text: "",
-    structureSummary: null,
-  },
-};
+let jsZipInstancePromise: Promise<any> | null = null;
 
-describe("MineruClient URL construction", () => {
-  it("appends the default version segment when missing", async () => {
-    const recorder = createFetchRecorder(EMPTY_RESPONSE);
-    const client = new MineruClient({
-      apiKey: "test-key",
-      baseUrl: "https://api.mineru.com",
-      fetchImpl: recorder.fetchStub,
-    });
-
-    await client.analyzeDocument({
-      bytes: DUMMY_BYTES,
-      mimeType: "application/pdf",
-    });
-
-    expect(recorder.getLastUrl()).toBe("https://api.mineru.com/v1/document/analyze");
-  });
-
-  it("respects an explicit version in the base URL", async () => {
-    const recorder = createFetchRecorder(EMPTY_RESPONSE);
-    const client = new MineruClient({
-      apiKey: "test-key",
-      baseUrl: "https://api.mineru.com/v2",
-      fetchImpl: recorder.fetchStub,
-    });
-
-    await client.analyzeDocument({
-      bytes: DUMMY_BYTES,
-      mimeType: "application/pdf",
-    });
-
-    expect(recorder.getLastUrl()).toBe("https://api.mineru.com/v2/document/analyze");
-  });
-});
-
-describe("MineruClient error handling", () => {
-  it("throws MineruHttpError with hint for 404 responses", async () => {
-    let calls = 0;
-    const fetchStub: typeof fetch = async () => {
-      calls++;
-      return new Response("<html>not found</html>", { status: 404 });
+async function loadTestJSZip() {
+  if (!jsZipInstancePromise) {
+    const load = async () => {
+      try {
+        const mod = await import("jszip");
+        return mod?.default ?? mod;
+      } catch (nodeModuleError) {
+        const mod = await import("npm:jszip@3.10.1").catch((npmImportError) => {
+          throw new AggregateError([nodeModuleError as Error, npmImportError as Error], "Unable to load JSZip for tests");
+        });
+        return (mod as any)?.default ?? mod;
+      }
     };
+
+    jsZipInstancePromise = load();
+  }
+
+  return await jsZipInstancePromise;
+}
+
+async function createArchivePayload(payload: unknown): Promise<Uint8Array> {
+  const JSZip = await loadTestJSZip();
+  const zip = new JSZip();
+  zip.file("analysis.json", JSON.stringify(payload));
+  return await zip.generateAsync({ type: "uint8array" });
+}
+
+describe("MineruClient analyzeDocument", () => {
+  it("creates a task, polls for completion, and parses the archive", async () => {
+    const archivePayload = await createArchivePayload({
+      data: {
+        pages: [
+          {
+            pageNumber: 1,
+            text: "Sample text",
+            blocks: [
+              {
+                type: "paragraph",
+                text: "Sample block",
+              },
+            ],
+          },
+        ],
+        text: "Sample text",
+        structureSummary: {
+          confidence: 0.9,
+          pages: [],
+        },
+      },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        const body = typeof init?.body === "string"
+          ? init.body
+          : init?.body instanceof Uint8Array
+            ? new TextDecoder().decode(init.body)
+            : init?.body ? String(init.body) : "";
+
+        const parsed = JSON.parse(body);
+        expect(parsed.document_url).toBe("https://signed.example.com/document.pdf");
+
+        return new Response(JSON.stringify({
+          task_id: "task-123",
+          status: "pending",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          task_id: "task-123",
+          status: "processing",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          task_id: "task-123",
+          status: "succeeded",
+          result: { full_zip_url: fullZipUrl },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
 
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
     });
 
-    let caughtError: unknown;
-    try {
-      await client.analyzeDocument({
-        bytes: DUMMY_BYTES,
-        mimeType: "application/pdf",
-      });
-    } catch (error) {
-      caughtError = error;
-    }
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+      documentId: "doc-1",
+    });
 
-    expect(calls).toBe(1);
+    expect(analysis.pages).toHaveLength(1);
+    expect(analysis.pages[0].text).toBe("Sample text");
+    expect(analysis.text).toContain("Sample text");
+    expect(analysis.structureSummary?.confidence).toBeCloseTo(0.9);
 
-    expect(caughtError).toBeInstanceOf(MineruHttpError);
-    if (caughtError instanceof MineruHttpError) {
-      expect(caughtError.status).toBe(404);
-      expect(caughtError.hint).toBe("document not found / sprawdź endpoint");
-      expect(caughtError.endpoint).toContain("document/analyze");
-    }
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mineru.net/api/v4/extract/task",
+      "https://mineru.net/api/v4/extract/task/task-123",
+      "https://mineru.net/api/v4/extract/task/task-123",
+      fullZipUrl,
+    ]);
   });
 
-  it("propagates MineruHttpError without hint for 5xx responses", async () => {
-    let calls = 0;
-    const fetchStub: typeof fetch = async () => {
-      calls++;
-      return new Response("server down", { status: 503 });
-    };
+  it("overrides organization header when provided per request", async () => {
+    const archivePayload = await createArchivePayload({
+      data: {
+        pages: [],
+        text: "",
+        structureSummary: null,
+      },
+    });
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("X-Organization-Id")).toBe("org-override");
+        const bodyText = typeof init?.body === "string" ? init.body : "";
+        const parsed = JSON.parse(bodyText);
+        expect(parsed.organization_id).toBe("org-override");
+
+        return new Response(JSON.stringify({
+          task_id: "task-org",
+          status: "pending",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("X-Organization-Id")).toBe("org-override");
+
+        return new Response(JSON.stringify({
+          task_id: "task-org",
+          status: "succeeded",
+          result: { full_zip_url: "https://cdn.example.com/archive.zip" },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+      organizationId: "org-default",
+    });
+
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+      organizationId: "org-override",
+    });
+
+    expect(analysis.pages).toEqual([]);
+    expect(calls[0]?.url).toBe("https://mineru.net/api/v4/extract/task");
+    expect(calls[1]?.url).toBe("https://mineru.net/api/v4/extract/task/task-org");
+  });
+
+  it("throws MineruHttpError when the task fails", async () => {
+    const { fetchStub } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({
+          task_id: "task-error",
+          status: "queued",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          task_id: "task-error",
+          status: "failed",
+          error: {
+            code: "INVALID_DOCUMENT",
+            message: "Document is corrupted",
+          },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    ]);
 
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
     });
 
-    let caughtError: unknown;
+    let caught: unknown;
     try {
-      await client.analyzeDocument({
-        bytes: DUMMY_BYTES,
-        mimeType: "application/pdf",
-      });
+      await client.analyzeDocument({ signedUrl: "https://signed.example.com/document.pdf" });
     } catch (error) {
-      caughtError = error;
+      caught = error;
     }
 
-    expect(calls).toBe(1);
+    expect(caught).toBeInstanceOf(MineruHttpError);
+    if (caught instanceof MineruHttpError) {
+      expect(caught.status).toBe(502);
+      expect(caught.hint).toBe("INVALID_DOCUMENT");
+      expect(caught.message).toContain("Document is corrupted");
+    }
+  });
 
-    expect(caughtError).toBeInstanceOf(MineruHttpError);
-    if (caughtError instanceof MineruHttpError) {
-      expect(caughtError.status).toBe(503);
-      expect(caughtError.hint).toBeUndefined();
+  it("propagates MineruHttpError when polling returns 404", async () => {
+    const { fetchStub } = createFetchSequence([
+      async () => {
+        return new Response(JSON.stringify({
+          task_id: "task-missing",
+          status: "pending",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response("not found", { status: 404 });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+    });
+
+    let caught: unknown;
+    try {
+      await client.analyzeDocument({ signedUrl: "https://signed.example.com/document.pdf" });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(MineruHttpError);
+    if (caught instanceof MineruHttpError) {
+      expect(caught.status).toBe(404);
+      expect(caught.hint).toBe("document not found / sprawdź endpoint");
+      expect(caught.endpoint).toContain("extract/task/task-missing");
     }
   });
 });
+
