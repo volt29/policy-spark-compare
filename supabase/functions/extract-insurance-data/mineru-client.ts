@@ -81,9 +81,41 @@ function sanitizeBaseUrl(url: string): string {
 }
 
 function pickBaseUrl(baseUrl?: string): string {
-  const envOverride = Deno.env.get("MINERU_API_URL")?.trim();
+  const envOverride = typeof Deno !== 'undefined'
+    ? Deno.env.get("MINERU_API_URL")?.trim()
+    : undefined;
   const candidate = baseUrl?.trim() || envOverride || DEFAULT_MINERU_BASE_URL;
-  return sanitizeBaseUrl(upgradeLegacyMineruDomain(candidate));
+  const upgraded = upgradeLegacyMineruDomain(candidate);
+
+  const ensureVersion = (urlString: string): string => {
+    const versionRegex = /\/v\d+(?:\/|$)/i;
+
+    try {
+      const parsed = new URL(urlString);
+      const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+
+      if (!versionRegex.test(normalizedPath)) {
+        const withoutLeadingSlash = normalizedPath.replace(/^\/+/, "");
+        const versionedPath = withoutLeadingSlash
+          ? `${withoutLeadingSlash}/v1`
+          : "v1";
+        parsed.pathname = `/${versionedPath}`;
+      } else {
+        parsed.pathname = normalizedPath || "/";
+      }
+
+      return parsed.toString();
+    } catch {
+      const sanitized = sanitizeBaseUrl(urlString);
+      if (versionRegex.test(sanitized)) {
+        return sanitized;
+      }
+
+      return `${sanitized}/v1`;
+    }
+  };
+
+  return sanitizeBaseUrl(ensureVersion(sanitizeBaseUrl(upgraded)));
 }
 
 export interface MineruClientOptions {
@@ -227,7 +259,7 @@ export class MineruClient {
       payload.append('organization_id', effectiveOrganizationId);
     }
 
-    const response = await this.fetchImpl(this.buildUrl('/v1/document/analyze'), {
+    const response = await this.fetchImpl(this.buildUrl('document/analyze'), {
       method: 'POST',
       body: payload,
       headers: this.createAuthHeaders(effectiveOrganizationId),
