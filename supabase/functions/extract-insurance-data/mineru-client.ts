@@ -227,10 +227,7 @@ export class MineruClient {
       payload.append('organization_id', effectiveOrganizationId);
     }
 
-    const endpoint = '/analyze';
-    const fullUrl = this.buildUrl(endpoint);
-
-    const response = await this.fetchImpl(fullUrl, {
+    const response = await this.fetchImpl(this.buildUrl('/v1/document/analyze'), {
       method: 'POST',
       body: payload,
       headers: this.createAuthHeaders(effectiveOrganizationId),
@@ -238,16 +235,6 @@ export class MineruClient {
 
     if (!response.ok) {
       const errorBody = await response.text();
-
-      if (response.status === 404) {
-        throw new Error(
-          `MinerU API endpoint not found (404). ` +
-          `URL: ${fullUrl}. ` +
-          `Check MINERU_API_URL environment variable or API endpoint path. ` +
-          `Response: ${errorBody}`
-        );
-      }
-
       throw new Error(`Mineru analysis failed (${response.status}): ${errorBody}`);
     }
 
