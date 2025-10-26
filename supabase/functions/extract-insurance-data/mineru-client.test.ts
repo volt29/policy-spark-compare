@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { MineruClient } from "./mineru-client";
+import { MineruClient, MineruHttpError } from "./mineru-client";
 
 const DUMMY_BYTES = new Uint8Array([0x01]);
 
@@ -65,5 +65,70 @@ describe("MineruClient URL construction", () => {
     });
 
     expect(recorder.getLastUrl()).toBe("https://api.mineru.com/v2/document/analyze");
+  });
+});
+
+describe("MineruClient error handling", () => {
+  it("throws MineruHttpError with hint for 404 responses", async () => {
+    let calls = 0;
+    const fetchStub: typeof fetch = async () => {
+      calls++;
+      return new Response("<html>not found</html>", { status: 404 });
+    };
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+    });
+
+    let caughtError: unknown;
+    try {
+      await client.analyzeDocument({
+        bytes: DUMMY_BYTES,
+        mimeType: "application/pdf",
+      });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(calls).toBe(1);
+
+    expect(caughtError).toBeInstanceOf(MineruHttpError);
+    if (caughtError instanceof MineruHttpError) {
+      expect(caughtError.status).toBe(404);
+      expect(caughtError.hint).toBe("document not found / sprawdź endpoint");
+      expect(caughtError.endpoint).toContain("document/analyze");
+    }
+  });
+
+  it("propagates MineruHttpError without hint for 5xx responses", async () => {
+    let calls = 0;
+    const fetchStub: typeof fetch = async () => {
+      calls++;
+      return new Response("server down", { status: 503 });
+    };
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+    });
+
+    let caughtError: unknown;
+    try {
+      await client.analyzeDocument({
+        bytes: DUMMY_BYTES,
+        mimeType: "application/pdf",
+      });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(calls).toBe(1);
+
+    expect(caughtError).toBeInstanceOf(MineruHttpError);
+    if (caughtError instanceof MineruHttpError) {
+      expect(caughtError.status).toBe(503);
+      expect(caughtError.hint).toBeUndefined();
+    }
   });
 });
