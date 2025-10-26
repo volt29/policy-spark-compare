@@ -4,6 +4,7 @@ import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
 import {
   convertMineruPagesToSections,
   MineruClient,
+  MineruHttpError,
   MineruPage,
   MineruStructuralSummary
 } from './mineru-client.ts';
@@ -508,6 +509,15 @@ serve(async (req) => {
         confidence: mineruStructureSummary?.confidence
       });
     } catch (mineruError) {
+      if (mineruError instanceof MineruHttpError) {
+        console.error('❌ MinerU analysis failed', {
+          status: mineruError.status,
+          endpoint: mineruError.endpoint,
+          hint: mineruError.hint,
+        });
+        throw mineruError;
+      }
+
       const message = mineruError instanceof Error ? mineruError.message : String(mineruError);
       console.error('❌ MinerU analysis failed', message);
       throw new Error(`MinerU extraction failed: ${message}`);
@@ -998,8 +1008,16 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Error in extract-insurance-data:', { message: errorMessage, document_id });
+    const mineruHttpError = error instanceof MineruHttpError ? error : undefined;
+    const rawMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorMessage = mineruHttpError?.hint ?? rawMessage;
+
+    console.error('Error in extract-insurance-data:', {
+      message: rawMessage,
+      document_id,
+      status: mineruHttpError?.status,
+      hint: mineruHttpError?.hint,
+    });
 
     // Update document status to 'failed'
     if (document_id && supabase) {
@@ -1031,9 +1049,18 @@ serve(async (req) => {
       }
     }
 
+    const statusCode = mineruHttpError?.status ?? 500;
+    const responsePayload = mineruHttpError
+      ? {
+          error: 'MinerU extraction failed',
+          status: mineruHttpError.status,
+          hint: mineruHttpError.hint,
+        }
+      : { error: errorMessage };
+
     return new Response(
-      JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify(responsePayload),
+      { status: statusCode, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });

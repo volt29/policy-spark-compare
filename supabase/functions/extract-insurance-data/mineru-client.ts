@@ -125,6 +125,25 @@ export interface MineruClientOptions {
   organizationId?: string;
 }
 
+export class MineruHttpError extends Error {
+  readonly status: number;
+  readonly endpoint: string;
+  readonly hint?: string;
+
+  constructor({ message, status, endpoint, hint }: {
+    message: string;
+    status: number;
+    endpoint: string;
+    hint?: string;
+  }) {
+    super(message);
+    this.name = 'MineruHttpError';
+    this.status = status;
+    this.endpoint = endpoint;
+    this.hint = hint;
+  }
+}
+
 export class MineruClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -210,8 +229,9 @@ export class MineruClient {
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const { headers, body, method = "GET" } = init;
+    const endpoint = this.buildUrl(path);
 
-    const response = await this.fetchImpl(this.buildUrl(path), {
+    const response = await this.fetchImpl(endpoint, {
       ...init,
       method,
       body,
@@ -220,7 +240,16 @@ export class MineruClient {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw new Error(`Mineru request failed (${response.status}): ${errorBody}`);
+      const hint = response.status === 404
+        ? 'document not found / sprawdź endpoint'
+        : undefined;
+
+      throw new MineruHttpError({
+        message: `Mineru request failed (${response.status}): ${errorBody}`,
+        status: response.status,
+        endpoint,
+        hint,
+      });
     }
 
     if (response.status === 204) {
@@ -259,7 +288,8 @@ export class MineruClient {
       payload.append('organization_id', effectiveOrganizationId);
     }
 
-    const response = await this.fetchImpl(this.buildUrl('document/analyze'), {
+    const endpoint = this.buildUrl('document/analyze');
+    const response = await this.fetchImpl(endpoint, {
       method: 'POST',
       body: payload,
       headers: this.createAuthHeaders(effectiveOrganizationId),
@@ -267,7 +297,16 @@ export class MineruClient {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw new Error(`Mineru analysis failed (${response.status}): ${errorBody}`);
+      const hint = response.status === 404
+        ? 'document not found / sprawdź endpoint'
+        : undefined;
+
+      throw new MineruHttpError({
+        message: `Mineru analysis failed (${response.status}): ${errorBody}`,
+        status: response.status,
+        endpoint,
+        hint,
+      });
     }
 
     const analysisPayload = await response.json();
