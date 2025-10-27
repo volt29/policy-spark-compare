@@ -159,6 +159,53 @@ async function loadJSZip(): Promise<JSZipStatic> {
   throw new Error('Unable to load JSZip module');
 }
 
+function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): string | null {
+  if (!task) {
+    return null;
+  }
+
+  const candidates = [
+    task.task_id,
+    (task as { taskId?: unknown }).taskId,
+    (task as { id?: unknown }).id,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    } else if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return String(candidate);
+    }
+  }
+
+  return null;
+}
+
+function normalizeFullZipUrl(result: MineruExtractTaskPayload['result'] | null | undefined): string | null {
+  if (!result) {
+    return null;
+  }
+
+  const candidates = [
+    (result as { full_zip_url?: unknown }).full_zip_url,
+    (result as { fullZipUrl?: unknown }).fullZipUrl,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+
+  return null;
+}
+
 function sanitizeBaseUrl(url: string): string {
   let sanitized = url.trim();
 
@@ -193,6 +240,7 @@ export interface MineruClientOptions {
   baseUrl?: string;
   fetchImpl?: FetchImpl;
   organizationId?: string;
+  zipLoader?: () => Promise<JSZipStatic>;
 }
 
 export class MineruHttpError extends Error {
@@ -219,12 +267,14 @@ export class MineruClient {
   private readonly apiKey: string;
   private readonly fetchImpl: FetchImpl;
   private readonly organizationId?: string;
+  private readonly loadZipModule: () => Promise<JSZipStatic>;
 
-  constructor({ apiKey, baseUrl, fetchImpl = fetch, organizationId }: MineruClientOptions) {
+  constructor({ apiKey, baseUrl, fetchImpl = fetch, organizationId, zipLoader }: MineruClientOptions) {
     this.apiKey = apiKey;
     this.baseUrl = pickBaseUrl(baseUrl);
     this.fetchImpl = fetchImpl;
     this.organizationId = organizationId?.trim();
+    this.loadZipModule = zipLoader ?? loadJSZip;
   }
 
   private createAuthHeaders(organizationIdOverride?: string): Headers {
@@ -410,7 +460,7 @@ export class MineruClient {
     const zipBuffer = await response.arrayBuffer();
 
     try {
-      const JSZip = await loadJSZip();
+      const JSZip = await this.loadZipModule();
       const archive = await JSZip.loadAsync(zipBuffer);
       const files = archive?.files ?? {};
       const jsonEntry = Object.values(files)
@@ -461,19 +511,27 @@ export class MineruClient {
       effectiveOrganizationId,
     );
 
-    if (!task?.task_id) {
+    const initialTaskId = normalizeTaskId(task);
+    const initialStatus = typeof task?.status === 'string' ? task.status.toLowerCase() : '';
+    const initialZipUrl = normalizeFullZipUrl(task?.result);
+
+    if (!initialTaskId) {
+      if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
+        return await this.downloadAndParseArchive(initialZipUrl);
+      }
+
       throw new Error('MineruClient.analyzeDocument: missing task identifier in response');
     }
 
-    const pollResult = await this.pollExtractTask(task.task_id, {
+    const pollResult = await this.pollExtractTask(initialTaskId, {
       pollIntervalMs,
       timeoutMs,
       organizationIdOverride: effectiveOrganizationId,
     });
 
-    const fullZipUrl = pollResult?.result?.full_zip_url ?? pollResult?.result?.fullZipUrl;
+    const fullZipUrl = normalizeFullZipUrl(pollResult?.result);
 
-    if (!fullZipUrl || typeof fullZipUrl !== 'string') {
+    if (!fullZipUrl) {
       throw new Error('MineruClient.analyzeDocument: Mineru task did not provide a result archive URL');
     }
 
