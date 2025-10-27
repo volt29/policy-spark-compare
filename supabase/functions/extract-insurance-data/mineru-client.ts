@@ -184,10 +184,24 @@ function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): st
 
   const sources: unknown[] = [task, (task as { task?: unknown })?.task, (task as { data?: unknown })?.data];
 
-  for (const source of sources) {
+  const queue: unknown[] = [...sources];
+
+  while (queue.length > 0) {
+    const source = queue.shift();
     const extracted = extractFrom(source);
+
     if (extracted) {
       return extracted;
+    }
+
+    if (source && typeof source === 'object') {
+      const record = source as { task?: unknown; data?: unknown };
+      if (record.task && !queue.includes(record.task)) {
+        queue.push(record.task);
+      }
+      if (record.data && !queue.includes(record.data)) {
+        queue.push(record.data);
+      }
     }
   }
 
