@@ -160,24 +160,34 @@ async function loadJSZip(): Promise<JSZipStatic> {
 }
 
 function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): string | null {
-  if (!task) {
-    return null;
-  }
+  const extractFrom = (source: unknown): string | null => {
+    if (!source || typeof source !== 'object') {
+      return null;
+    }
 
-  const candidates = [
-    task.task_id,
-    (task as { taskId?: unknown }).taskId,
-    (task as { id?: unknown }).id,
-  ];
+    const record = source as Record<string, unknown>;
+    const candidates = [record.task_id, record.taskId, record.id];
 
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string') {
-      const trimmed = candidate.trim();
-      if (trimmed) {
-        return trimmed;
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (trimmed) {
+          return trimmed;
+        }
+      } else if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+        return String(candidate);
       }
-    } else if (typeof candidate === 'number' && Number.isFinite(candidate)) {
-      return String(candidate);
+    }
+
+    return null;
+  };
+
+  const sources: unknown[] = [task, (task as { task?: unknown })?.task, (task as { data?: unknown })?.data];
+
+  for (const source of sources) {
+    const extracted = extractFrom(source);
+    if (extracted) {
+      return extracted;
     }
   }
 
