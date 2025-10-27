@@ -219,6 +219,69 @@ describe("MineruClient analyzeDocument", () => {
     ]);
   });
 
+  it("polls task when identifier is nested inside task object", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({
+      data: {
+        pages: [
+          {
+            pageNumber: 1,
+            text: "Nested",
+          },
+        ],
+        text: "Nested",
+        structureSummary: null,
+      },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({
+          task: { task_id: "task-nested" },
+          status: "pending",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          task_id: "task-nested",
+          status: "succeeded",
+          result: { full_zip_url: fullZipUrl },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+      zipLoader,
+    });
+
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+    });
+
+    expect(analysis.text).toBe("Nested");
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mineru.net/api/v4/extract/task",
+      "https://mineru.net/api/v4/extract/task/task-nested",
+      fullZipUrl,
+    ]);
+  });
+
   it("overrides organization header when provided per request", async () => {
     const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
