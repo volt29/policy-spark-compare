@@ -35,38 +35,49 @@ function createFetchSequence(
   return { fetchStub, calls };
 }
 
-let jsZipInstancePromise: Promise<any> | null = null;
+function createArchiveSimulator(payload: unknown) {
+  const jsonText = typeof payload === "string" ? payload : JSON.stringify(payload);
+  const archivePayload = new TextEncoder().encode(jsonText);
 
-async function loadTestJSZip() {
-  if (!jsZipInstancePromise) {
-    const load = async () => {
-      try {
-        const mod = await import("jszip");
-        return mod?.default ?? mod;
-      } catch (nodeModuleError) {
-        const mod = await import("npm:jszip@3.10.1").catch((npmImportError) => {
-          throw new AggregateError([nodeModuleError as Error, npmImportError as Error], "Unable to load JSZip for tests");
-        });
-        return (mod as any)?.default ?? mod;
+  const zipLoader = async () => ({
+    loadAsync: async (data: ArrayBuffer | Uint8Array | string) => {
+      let buffer: Uint8Array;
+
+      if (typeof data === "string") {
+        buffer = new TextEncoder().encode(data);
+      } else if (data instanceof Uint8Array) {
+        buffer = data;
+      } else if (data instanceof ArrayBuffer) {
+        buffer = new Uint8Array(data);
+      } else {
+        buffer = new TextEncoder().encode(String(data));
       }
-    };
 
-    jsZipInstancePromise = load();
-  }
+      const decodedText = new TextDecoder().decode(buffer);
 
-  return await jsZipInstancePromise;
-}
+      return {
+        files: {
+          "analysis.json": {
+            name: "analysis.json",
+            dir: false,
+            async: async (type: "string") => {
+              if (type !== "string") {
+                throw new Error(`Unsupported output type: ${type}`);
+              }
+              return decodedText;
+            },
+          },
+        },
+      };
+    },
+  });
 
-async function createArchivePayload(payload: unknown): Promise<Uint8Array> {
-  const JSZip = await loadTestJSZip();
-  const zip = new JSZip();
-  zip.file("analysis.json", JSON.stringify(payload));
-  return await zip.generateAsync({ type: "uint8array" });
+  return { archivePayload, zipLoader };
 }
 
 describe("MineruClient analyzeDocument", () => {
   it("creates a task, polls for completion, and parses the archive", async () => {
-    const archivePayload = await createArchivePayload({
+    const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
         pages: [
           {
@@ -140,6 +151,7 @@ describe("MineruClient analyzeDocument", () => {
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
+      zipLoader,
     });
 
     const analysis = await client.analyzeDocument({
@@ -160,8 +172,55 @@ describe("MineruClient analyzeDocument", () => {
     ]);
   });
 
+  it("handles immediate success responses without task identifiers", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({
+      data: {
+        pages: [],
+        text: "Immediate success",
+        structureSummary: null,
+      },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({
+          status: "succeeded",
+          result: { full_zip_url: fullZipUrl },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+      zipLoader,
+    });
+
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+    });
+
+    expect(analysis.text).toBe("Immediate success");
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mineru.net/api/v4/extract/task",
+      fullZipUrl,
+    ]);
+  });
+
   it("overrides organization header when provided per request", async () => {
-    const archivePayload = await createArchivePayload({
+    const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
         pages: [],
         text: "",
@@ -210,6 +269,7 @@ describe("MineruClient analyzeDocument", () => {
       apiKey: "test-key",
       fetchImpl: fetchStub,
       organizationId: "org-default",
+      zipLoader,
     });
 
     const analysis = await client.analyzeDocument({
@@ -223,7 +283,7 @@ describe("MineruClient analyzeDocument", () => {
   });
 
   it("trims legacy analyze endpoints from base URL overrides", async () => {
-    const archivePayload = await createArchivePayload({
+    const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
         pages: [
           {
@@ -271,6 +331,7 @@ describe("MineruClient analyzeDocument", () => {
       apiKey: "test-key",
       baseUrl: "https://api.mineru.com/v1/document/analyze",
       fetchImpl: fetchStub,
+      zipLoader,
     });
 
     const analysis = await client.analyzeDocument({
