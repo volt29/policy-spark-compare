@@ -159,48 +159,82 @@ async function loadJSZip(): Promise<JSZipStatic> {
   throw new Error('Unable to load JSZip module');
 }
 
+const TASK_IDENTIFIER_KEYS = [
+  'task_id',
+  'taskId',
+  'id',
+  'task_identifier',
+  'taskIdentifier',
+  'task_uuid',
+  'taskUuid',
+  'uuid',
+] as const;
+
 function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): string | null {
-  const extractFrom = (source: unknown): string | null => {
-    if (!source || typeof source !== 'object') {
-      return null;
+  const extractCandidate = (value: unknown): string | null => {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
     }
 
-    const record = source as Record<string, unknown>;
-    const candidates = [record.task_id, record.taskId, record.id];
-
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string') {
-        const trimmed = candidate.trim();
-        if (trimmed) {
-          return trimmed;
-        }
-      } else if (typeof candidate === 'number' && Number.isFinite(candidate)) {
-        return String(candidate);
-      }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
     }
 
     return null;
   };
 
-  const sources: unknown[] = [task, (task as { task?: unknown })?.task, (task as { data?: unknown })?.data];
+  const directCandidate = extractCandidate(task);
+  if (directCandidate) {
+    return directCandidate;
+  }
 
-  const queue: unknown[] = [...sources];
+  const visited = new Set<object>();
+  const queue: unknown[] = [];
+
+  if (task && typeof task === 'object') {
+    queue.push(task);
+  }
 
   while (queue.length > 0) {
-    const source = queue.shift();
-    const extracted = extractFrom(source);
+    const current = queue.shift();
 
-    if (extracted) {
-      return extracted;
+    if (!current || typeof current !== 'object') {
+      continue;
     }
 
-    if (source && typeof source === 'object') {
-      const record = source as { task?: unknown; data?: unknown };
-      if (record.task && !queue.includes(record.task)) {
-        queue.push(record.task);
+    if (visited.has(current as object)) {
+      continue;
+    }
+
+    visited.add(current as object);
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        const candidate = extractCandidate(item);
+        if (candidate) {
+          return candidate;
+        }
+
+        if (item && typeof item === 'object' && !visited.has(item as object)) {
+          queue.push(item);
+        }
       }
-      if (record.data && !queue.includes(record.data)) {
-        queue.push(record.data);
+      continue;
+    }
+
+    const record = current as Record<string, unknown>;
+
+    for (const key of TASK_IDENTIFIER_KEYS) {
+      const candidate = extractCandidate(record[key]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    for (const value of Object.values(record)) {
+      if (value && typeof value === 'object' && !visited.has(value as object)) {
+        queue.push(value);
       }
     }
   }
