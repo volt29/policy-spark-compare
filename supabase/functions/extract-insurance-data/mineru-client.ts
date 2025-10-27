@@ -168,6 +168,7 @@ const TASK_IDENTIFIER_KEYS = [
   'task_uuid',
   'taskUuid',
   'uuid',
+  'task',
 ] as const;
 
 function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): string | null {
