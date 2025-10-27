@@ -160,7 +160,23 @@ async function loadJSZip(): Promise<JSZipStatic> {
 }
 
 function sanitizeBaseUrl(url: string): string {
-  return url.replace(/\/$/, "");
+  let sanitized = url.trim();
+
+  sanitized = sanitized.replace(/\/+$/, "");
+
+  const lower = sanitized.toLowerCase();
+  const legacySuffixes = [
+    "/document/analyze",
+    "/documents/analyze",
+  ];
+
+  for (const suffix of legacySuffixes) {
+    if (lower.endsWith(suffix)) {
+      return sanitized.slice(0, sanitized.length - suffix.length);
+    }
+  }
+
+  return sanitized;
 }
 
 function pickBaseUrl(baseUrl?: string): string {

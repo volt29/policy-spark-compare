@@ -1,4 +1,5 @@
 // @ts-nocheck
+import "@/test/setup";
 import { describe, expect, it } from "bun:test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
