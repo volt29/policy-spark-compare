@@ -349,6 +349,69 @@ describe("MineruClient analyzeDocument", () => {
     ]);
   });
 
+  it("polls task when identifier is returned as task_identifier", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({
+      data: {
+        pages: [
+          {
+            pageNumber: 1,
+            text: "Identifier variant",
+          },
+        ],
+        text: "Identifier variant",
+        structureSummary: null,
+      },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({
+          status: "queued",
+          task_identifier: "task-identifier-123",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          status: "succeeded",
+          task_identifier: "task-identifier-123",
+          result: { full_zip_url: fullZipUrl },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+      zipLoader,
+    });
+
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+    });
+
+    expect(analysis.text).toBe("Identifier variant");
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mineru.net/api/v4/extract/task",
+      "https://mineru.net/api/v4/extract/task/task-identifier-123",
+      fullZipUrl,
+    ]);
+  });
+
   it("overrides organization header when provided per request", async () => {
     const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
