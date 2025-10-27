@@ -222,6 +222,69 @@ describe("MineruClient analyzeDocument", () => {
     expect(calls[1]?.url).toBe("https://mineru.net/api/v4/extract/task/task-org");
   });
 
+  it("trims legacy analyze endpoints from base URL overrides", async () => {
+    const archivePayload = await createArchivePayload({
+      data: {
+        pages: [
+          {
+            pageNumber: 1,
+            text: "Sample",
+          },
+        ],
+        text: "Sample",
+        structureSummary: null,
+      },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({
+          task_id: "task-legacy",
+          status: "pending",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          task_id: "task-legacy",
+          status: "succeeded",
+          result: { full_zip_url: fullZipUrl },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      baseUrl: "https://api.mineru.com/v1/document/analyze",
+      fetchImpl: fetchStub,
+    });
+
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+    });
+
+    expect(analysis.text).toBe("Sample");
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.mineru.com/v1/extract/task",
+      "https://api.mineru.com/v1/extract/task/task-legacy",
+      fullZipUrl,
+    ]);
+  });
+
   it("throws MineruHttpError when the task fails", async () => {
     const { fetchStub } = createFetchSequence([
       async (_input, init) => {
