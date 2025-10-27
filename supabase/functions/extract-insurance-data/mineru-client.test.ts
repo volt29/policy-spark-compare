@@ -219,6 +219,63 @@ describe("MineruClient analyzeDocument", () => {
     ]);
   });
 
+  it("extracts task identifier from legacy task field", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({
+      data: {
+        pages: [],
+        text: "Legacy task response",
+        structureSummary: null,
+      },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/legacy-archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async (_input, init) => {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({
+          task: "legacy-task-42",
+          status: "pending",
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(JSON.stringify({
+          status: "succeeded",
+          result: { full_zip_url: fullZipUrl },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      async () => {
+        return new Response(archivePayload, {
+          status: 200,
+          headers: { "Content-Type": "application/zip" },
+        });
+      },
+    ]);
+
+    const client = new MineruClient({
+      apiKey: "test-key",
+      fetchImpl: fetchStub,
+      zipLoader,
+    });
+
+    const analysis = await client.analyzeDocument({
+      signedUrl: "https://signed.example.com/document.pdf",
+    });
+
+    expect(analysis.text).toBe("Legacy task response");
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mineru.net/api/v4/extract/task",
+      "https://mineru.net/api/v4/extract/task/legacy-task-42",
+      fullZipUrl,
+    ]);
+  });
+
   it("polls task when identifier is nested inside task object", async () => {
     const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
