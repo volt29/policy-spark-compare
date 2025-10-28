@@ -781,13 +781,7 @@ function normalizeMineruPage(raw: any, index: number): MineruPage {
     ? raw.blocks.map(normalizeMineruBlock)
     : undefined;
 
-  const text = typeof raw?.text === 'string'
-    ? raw.text
-    : typeof raw?.content === 'string'
-      ? raw.content
-      : Array.isArray(raw?.content)
-        ? raw.content.filter((part: unknown) => typeof part === 'string').join('\n')
-        : '';
+  const text = extractPageText(raw, blocks);
 
   return {
     pageNumber,
@@ -796,6 +790,68 @@ function normalizeMineruPage(raw: any, index: number): MineruPage {
     height,
     blocks,
   };
+}
+
+function extractPageText(raw: any, blocks?: MineruBlock[]): string {
+  const directText = typeof raw?.text === 'string' ? raw.text : undefined;
+  if (directText && directText.trim().length > 0) {
+    return directText;
+  }
+
+  if (typeof raw?.content === 'string' && raw.content.trim().length > 0) {
+    return raw.content;
+  }
+
+  if (Array.isArray(raw?.content)) {
+    const parts = raw.content
+      .map((part: unknown) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+
+        if (part && typeof part === 'object') {
+          const candidate =
+            typeof (part as { text?: unknown }).text === 'string'
+              ? (part as { text: string }).text
+              : typeof (part as { content?: unknown }).content === 'string'
+                ? (part as { content: string }).content
+                : undefined;
+
+          if (candidate && candidate.trim().length > 0) {
+            return candidate;
+          }
+        }
+
+        return undefined;
+      })
+      .filter((value: string | undefined): value is string => Boolean(value && value.trim().length > 0));
+
+    if (parts.length > 0) {
+      return parts.join('\n');
+    }
+  }
+
+  if (Array.isArray(raw?.lines)) {
+    const lines = raw.lines
+      .map((line: unknown) => (typeof line === 'string' ? line : undefined))
+      .filter((value: string | undefined): value is string => Boolean(value && value.trim().length > 0));
+
+    if (lines.length > 0) {
+      return lines.join('\n');
+    }
+  }
+
+  if (blocks && blocks.length > 0) {
+    const blockText = blocks
+      .map((block) => block.text?.trim())
+      .filter((value): value is string => Boolean(value && value.length > 0));
+
+    if (blockText.length > 0) {
+      return blockText.join('\n');
+    }
+  }
+
+  return '';
 }
 
 function normalizeMineruBlock(raw: any): MineruBlock {
