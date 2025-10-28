@@ -185,6 +185,13 @@ describe("MineruClient analyzeDocument", () => {
     const { fetchStub, calls } = createFetchSequence([
       async (_input, init) => {
         expect(init?.method).toBe("POST");
+        expect(typeof init?.body).toBe("string");
+
+        const requestBody = JSON.parse(String(init?.body));
+        expect(requestBody.is_ocr).toBe(true);
+        expect(requestBody.enable_table).toBe(true);
+        expect(requestBody.enable_formula).toBe(true);
+
         return mineruOk({ task_id: "task-123", state: "pending" });
       },
       async () => mineruOk({ task_id: "task-123", state: "processing" }),
@@ -214,6 +221,45 @@ describe("MineruClient analyzeDocument", () => {
       "https://mineru.net/api/v4/extract/task/task-123",
       fullZipUrl,
     ]);
+  });
+
+  it("allows overriding OCR and table settings per request", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({
+      data: {
+        pages: [
+          {
+            pageNumber: 1,
+            text: "Overridden settings",
+            blocks: [{ type: "paragraph", text: "Overridden settings" }],
+          },
+        ],
+        text: "Overridden settings",
+        structureSummary: null,
+      },
+    });
+
+    const { fetchStub } = createFetchSequence([
+      async (_input, init) => {
+        const requestBody = JSON.parse(String(init?.body));
+        expect(requestBody.is_ocr).toBe(false);
+        expect(requestBody.enable_table).toBe(false);
+        expect(requestBody.enable_formula).toBe(false);
+        return mineruOk({ state: "done", full_zip_url: "https://cdn.example.com/archive.zip" });
+      },
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    await client.analyzeDocument({
+      ...defaultOptions,
+      enableOcr: false,
+      enableTable: false,
+      enableFormula: false,
+    });
   });
 
   it("handles extract_result arrays returned directly by MinerU", async () => {

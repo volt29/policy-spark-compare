@@ -474,6 +474,11 @@ serve(async (req) => {
       throw new Error('MINERU_API_KEY is not configured');
     }
 
+    const mineruEnableOcrEnv = Deno.env.get('MINERU_ENABLE_OCR');
+    const mineruEnableOcr = mineruEnableOcrEnv
+      ? !['false', '0', 'off', 'no'].includes(mineruEnableOcrEnv.trim().toLowerCase())
+      : true;
+
     const mineruClient = new MineruClient({
       apiKey: mineruApiKey,
       baseUrl: Deno.env.get('MINERU_API_URL') ?? undefined,
@@ -488,6 +493,9 @@ serve(async (req) => {
       const analysis = await mineruClient.analyzeDocument({
         signedUrl,
         documentId: document_id,
+        enableOcr: mineruEnableOcr,
+        enableTable: true,
+        enableFormula: true,
       });
 
       mineruPages = analysis.pages;

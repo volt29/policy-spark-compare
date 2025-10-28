@@ -57,6 +57,9 @@ export interface MineruAnalyzeDocumentOptions {
   organizationId?: string;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  enableOcr?: boolean;
+  enableTable?: boolean;
+  enableFormula?: boolean;
 }
 
 export interface MineruAnalyzeDocumentResult {
@@ -731,7 +734,16 @@ export class MineruClient {
   }
 
   async analyzeDocument(options: MineruAnalyzeDocumentOptions): Promise<MineruAnalyzeDocumentResult> {
-    const { signedUrl, documentId, organizationId, pollIntervalMs, timeoutMs } = options;
+    const {
+      signedUrl,
+      documentId,
+      organizationId,
+      pollIntervalMs,
+      timeoutMs,
+      enableOcr,
+      enableTable,
+      enableFormula,
+    } = options;
     const trimmedSignedUrl = typeof signedUrl === 'string' ? signedUrl.trim() : '';
 
     if (!trimmedSignedUrl) {
@@ -760,10 +772,18 @@ export class MineruClient {
 
     logInfo('analyzeDocument.start', logContext);
 
+    const isOcrEnabled = enableOcr ?? true;
+    const isTableEnabled = enableTable ?? true;
+    const isFormulaEnabled = enableFormula ?? true;
+
     const bodyPayload: Record<string, unknown> = {
       document_url: trimmedSignedUrl,
       url: trimmedSignedUrl,
     };
+
+    bodyPayload.is_ocr = isOcrEnabled;
+    bodyPayload.enable_table = isTableEnabled;
+    bodyPayload.enable_formula = isFormulaEnabled;
 
     if (documentId) {
       bodyPayload.document_id = documentId;
