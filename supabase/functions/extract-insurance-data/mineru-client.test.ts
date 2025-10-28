@@ -229,11 +229,6 @@ describe("MineruClient analyzeDocument", () => {
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
-      zipLoader,
-    });
-
-    const analysis = await client.analyzeDocument({
-      signedUrl: "https://signed.example.com/document.pdf",
     });
 
     expect(analysis.text).toBe("Immediate success");
@@ -337,12 +332,13 @@ describe("MineruClient analyzeDocument", () => {
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
-      zipLoader,
     });
 
-    const analysis = await client.analyzeDocument({
-      signedUrl: "https://signed.example.com/document.pdf",
-    });
+    await expect(
+      client.analyzeDocument({
+        signedUrl: "https://signed.example.com/document.pdf",
+      }),
+    ).rejects.toMatchObject({ code: "MINERU_TIMEOUT" });
 
     expect(analysis.text).toBe("Recovered");
     expect(calls.map((call) => call.url)).toEqual([
@@ -380,6 +376,7 @@ describe("MineruClient analyzeDocument", () => {
 
     expect(calls).toHaveLength(3);
   });
+});
 
   it("throws MINERU_NO_RESULT_URL when the completed task lacks an archive URL", async () => {
     const { fetchStub } = createFetchSequence([
