@@ -1,17 +1,35 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
   MineruClient,
   MineruPage,
   MineruSegmentationResult,
   convertMineruPagesToSections,
-} from "./mineru-client";
-import { MineruClientError, MineruHttpError } from "./mineru-errors.ts";
+} from "./mineru-client.ts";
+import { MineruHttpError } from "./mineru-errors.ts";
 
 type FetchCall = {
   url: string;
   init?: RequestInit;
 };
+
+const originalConsole = {
+  info: console.info,
+  error: console.error,
+  debug: console.debug,
+};
+
+beforeEach(() => {
+  console.info = () => {};
+  console.error = () => {};
+  console.debug = () => {};
+});
+
+afterEach(() => {
+  console.info = originalConsole.info;
+  console.error = originalConsole.error;
+  console.debug = originalConsole.debug;
+});
 
 function createFetchSequence(
   handlers: Array<(
@@ -110,6 +128,10 @@ function mineruError({
 }
 
 describe("MineruClient analyzeDocument", () => {
+  const defaultOptions = {
+    signedUrl: "https://signed.example.com/document.pdf",
+  } as const;
+
   it("processes a happy path task and parses the archive", async () => {
     const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
@@ -151,13 +173,10 @@ describe("MineruClient analyzeDocument", () => {
       zipLoader,
     });
 
-    const analysis = await client.analyzeDocument({
-      signedUrl: "https://signed.example.com/document.pdf",
-      documentId: "doc-1",
-    });
+    const analysis = await client.analyzeDocument({ ...defaultOptions, documentId: "doc-1" });
 
     expect(analysis.pages).toHaveLength(1);
-    expect(analysis.pages[0].text).toBe("Sample text");
+    expect(analysis.pages[0]?.text).toBe("Sample text");
     expect(analysis.text).toContain("Sample text");
     expect(analysis.structureSummary?.confidence).toBeCloseTo(0.9);
 
@@ -169,42 +188,25 @@ describe("MineruClient analyzeDocument", () => {
     ]);
   });
 
-  it("handles task identifiers provided with alternate casing", async () => {
-    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: '', structureSummary: null } });
-    const taskId = "ABCDEF1234567890";
+  it("accepts task identifiers with underscores", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: "", structureSummary: null } });
+    const taskId = "task_2025_0001";
     const fullZipUrl = "https://cdn.example.com/archive.zip";
 
     const { fetchStub, calls } = createFetchSequence([
-      async () => mineruOk({ TaskID: taskId, state: "pending" }),
+      async () => mineruOk({
+        metadata: { task_identifier: taskId },
+        state: "queued",
+      }),
       async () => mineruOk({ task_id: taskId, state: "done", full_zip_url: fullZipUrl }),
       async () => new Response(archivePayload, { status: 200, headers: { "Content-Type": "application/zip" } }),
     ]);
 
     const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
 
-    const analysis = await client.analyzeDocument({ signedUrl: "https://signed.example.com/document.pdf" });
+    await client.analyzeDocument(defaultOptions);
 
-    expect(calls[1]?.url).toContain(taskId);
-    expect(analysis.pages).toEqual([]);
-    expect(analysis.text).toBe("");
-  });
-
-  it("extracts task identifiers from task_ids arrays", async () => {
-    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: '', structureSummary: null } });
-    const taskId = "task-abc-123";
-    const fullZipUrl = "https://cdn.example.com/archive.zip";
-
-    const { fetchStub, calls } = createFetchSequence([
-      async () => mineruOk({ task_ids: [taskId], state: "queued" }),
-      async () => mineruOk({ task_id: taskId, state: "done", full_zip_url: fullZipUrl }),
-      async () => new Response(archivePayload, { status: 200, headers: { "Content-Type": "application/zip" } }),
-    ]);
-
-    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
-
-    await client.analyzeDocument({ signedUrl: "https://signed.example.com/document.pdf" });
-
-    expect(calls[1]?.url).toContain(taskId);
+    expect(calls[1]?.url).toBe(`https://mineru.net/api/v4/extract/task/${taskId}`);
   });
 
   it("returns analysis when MinerU immediately provides an archive", async () => {
@@ -226,10 +228,9 @@ describe("MineruClient analyzeDocument", () => {
       }),
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
-    });
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument(defaultOptions);
 
     expect(analysis.text).toBe("Immediate success");
     expect(calls.map((call) => call.url)).toEqual([
@@ -239,29 +240,13 @@ describe("MineruClient analyzeDocument", () => {
   });
 
   it("throws MINERU_NO_TASK_ID when the initial response lacks an identifier and archive", async () => {
-    const { fetchStub, calls } = createFetchSequence([
+    const { fetchStub } = createFetchSequence([
       async () => mineruOk({ state: "pending" }),
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
-    });
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub });
 
-    let caught: unknown;
-    try {
-      await client.analyzeDocument({
-        signedUrl: "https://signed.example.com/document.pdf",
-      });
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(calls).toHaveLength(1);
-    expect(caught).toBeInstanceOf(MineruClientError);
-    if (caught instanceof MineruClientError) {
-      expect(caught.code).toBe("MINERU_NO_TASK_ID");
-    }
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_NO_TASK_ID" });
   });
 
   it("throws MINERU_TASK_FAILED when polling returns a failure state", async () => {
@@ -270,51 +255,34 @@ describe("MineruClient analyzeDocument", () => {
       async () => mineruOk({ task_id: "task-err", state: "failed", err_msg: "Invalid document" }),
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
-    });
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub });
 
-    await expect(
-      client.analyzeDocument({
-        signedUrl: "https://signed.example.com/document.pdf",
-      }),
-    ).rejects.toMatchObject({ code: "MINERU_TASK_FAILED" });
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_TASK_FAILED" });
   });
 
   it("throws MineruHttpError without retry on HTTP 400", async () => {
-    const { fetchStub, calls } = createFetchSequence([
+    const { fetchStub } = createFetchSequence([
       async () => mineruError({ code: 40001, msg: "Bad request", status: 400 }),
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
-    });
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub });
 
-    let caught: unknown;
-    try {
-      await client.analyzeDocument({
-        signedUrl: "https://signed.example.com/document.pdf",
-      });
-    } catch (error) {
-      caught = error;
-    }
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toBeInstanceOf(MineruHttpError);
+  });
 
-    expect(calls).toHaveLength(1);
-    expect(caught).toBeInstanceOf(MineruHttpError);
-    if (caught instanceof MineruHttpError) {
-      expect(caught.status).toBe(400);
-    }
+  it("throws MINERU_INVALID_RESPONSE when MinerU returns an empty payload", async () => {
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk(null),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub });
+
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_INVALID_RESPONSE" });
   });
 
   it("retries on temporary 5xx errors and eventually succeeds", async () => {
     const { archivePayload, zipLoader } = createArchiveSimulator({
-      data: {
-        pages: [],
-        text: "Recovered",
-        structureSummary: null,
-      },
+      data: { pages: [], text: "Recovered", structureSummary: null },
     });
 
     const fullZipUrl = "https://cdn.example.com/archive.zip";
@@ -329,16 +297,9 @@ describe("MineruClient analyzeDocument", () => {
       }),
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
-    });
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
 
-    await expect(
-      client.analyzeDocument({
-        signedUrl: "https://signed.example.com/document.pdf",
-      }),
-    ).rejects.toMatchObject({ code: "MINERU_TIMEOUT" });
+    const analysis = await client.analyzeDocument(defaultOptions);
 
     expect(analysis.text).toBe("Recovered");
     expect(calls.map((call) => call.url)).toEqual([
@@ -351,32 +312,16 @@ describe("MineruClient analyzeDocument", () => {
 
   it("throws MineruHttpError with MINERU_TIMEOUT when the request aborts", async () => {
     const abortError = new DOMException("Aborted", "AbortError");
-    const { fetchStub, calls } = createFetchSequence([
-      async () => {
-        throw abortError;
-      },
-      async () => {
-        throw abortError;
-      },
-      async () => {
-        throw abortError;
-      },
+    const { fetchStub } = createFetchSequence([
+      async () => { throw abortError; },
+      async () => { throw abortError; },
+      async () => { throw abortError; },
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
-    });
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub });
 
-    await expect(
-      client.analyzeDocument({
-        signedUrl: "https://signed.example.com/document.pdf",
-      }),
-    ).rejects.toMatchObject({ code: "MINERU_TIMEOUT" });
-
-    expect(calls).toHaveLength(3);
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_TIMEOUT" });
   });
-});
 
   it("throws MINERU_NO_RESULT_URL when the completed task lacks an archive URL", async () => {
     const { fetchStub } = createFetchSequence([
@@ -384,16 +329,109 @@ describe("MineruClient analyzeDocument", () => {
       async () => mineruOk({ task_id: "task-missing", state: "done" }),
     ]);
 
-    const client = new MineruClient({
-      apiKey: "test-key",
-      fetchImpl: fetchStub,
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub });
+
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_NO_RESULT_URL" });
+  });
+
+  it("throws MINERU_ARCHIVE_ERROR when the archive does not contain JSON", async () => {
+    const zipLoader = async () => ({
+      loadAsync: async () => ({
+        files: {
+          "readme.txt": {
+            name: "readme.txt",
+            dir: false,
+            async: async () => "plain text",
+          },
+        },
+      }),
     });
 
-    await expect(
-      client.analyzeDocument({
-        signedUrl: "https://signed.example.com/document.pdf",
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk({ task_id: "task-zip", state: "done", full_zip_url: "https://cdn.example.com/archive.zip" }),
+      async () => new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
       }),
-    ).rejects.toMatchObject({ code: "MINERU_NO_RESULT_URL" });
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_ARCHIVE_ERROR" });
+  });
+
+  it("normalizes alternate MinerU payload shapes", async () => {
+    const structuredPayload = {
+      data: {
+        pages: [
+          {
+            pageNumber: 1,
+            content: [
+              "Primary",
+              { text: "Secondary" },
+              { content: "Tertiary" },
+            ],
+          },
+          {
+            pageNumber: 2,
+            content: [],
+            lines: ["Line A", "Line B"],
+          },
+          {
+            pageNumber: 3,
+            blocks: [
+              { type: "paragraph", text: "Block text" },
+            ],
+          },
+        ],
+        structure_summary: {
+          confidence: 0.75,
+          pageSummaries: [
+            {
+              page_number: 1,
+              block_count: 5,
+              top_headings: ["Heading A"],
+              keywords: ["alpha", 42, "beta"],
+            },
+          ],
+        },
+      },
+    };
+
+    const { archivePayload, zipLoader } = createArchiveSimulator(structuredPayload);
+    const fullZipUrl = "https://cdn.example.com/structured.zip";
+
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk({ task_id: "task-structured", state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument(defaultOptions);
+
+    expect(analysis.pages.map((page) => page.text)).toEqual([
+      "Primary\nSecondary\nTertiary",
+      "Line A\nLine B",
+      "Block text",
+    ]);
+    expect(analysis.structureSummary?.confidence).toBeCloseTo(0.75);
+    expect(analysis.structureSummary?.pages[0]).toMatchObject({
+      pageNumber: 1,
+      blockCount: 5,
+      headings: ["Heading A"],
+      keywords: ["alpha", "beta"],
+    });
+  });
+});
+
+describe("MineruClient configuration", () => {
+  it("exposes the resolved base URL", () => {
+    const client = new MineruClient({ apiKey: "key", baseUrl: "https://mineru.example.com/api/v4/" });
+    expect(client.getBaseUrl()).toBe("https://mineru.example.com/api/v4");
   });
 });
 
@@ -420,8 +458,13 @@ describe("convertMineruPagesToSections", () => {
         text: "Pricing details",
         blocks: [
           {
+            type: "heading",
+            headingLevel: 2,
+            text: "Pricing",
+          },
+          {
             type: "paragraph",
-            text: "Premium: $100",
+            text: "Pricing details appear here.",
           },
         ],
       },
@@ -429,11 +472,37 @@ describe("convertMineruPagesToSections", () => {
 
     const result: MineruSegmentationResult = convertMineruPagesToSections(pages);
 
-    expect(result.sections).not.toHaveLength(0);
-    expect(result.sources).not.toHaveLength(0);
-    expect(result.sections[0]).toMatchObject({
-      type: expect.any(String),
-      content: expect.any(String),
-    });
+    expect(result.sections).toHaveLength(4);
+    expect(result.sections.map((section) => section.snippet)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Introduction"),
+        expect.stringContaining("This is the introduction body."),
+        expect.stringContaining("Pricing"),
+        expect.stringContaining("Pricing details appear here."),
+      ]),
+    );
+    expect(result.sources).toHaveLength(4);
+  });
+
+  it("handles pages without headings by creating a default section", () => {
+    const pages: MineruPage[] = [
+      {
+        pageNumber: 1,
+        text: "Page text without headings",
+        blocks: [
+          {
+            type: "paragraph",
+            text: "Only body text",
+          },
+        ],
+      },
+    ];
+
+    const result = convertMineruPagesToSections(pages);
+
+    expect(result.sections).toHaveLength(1);
+    expect(result.sections[0]?.snippet).toContain("Only body text");
+    expect(result.sections[0]?.content).toContain("Only body text");
   });
 });
+

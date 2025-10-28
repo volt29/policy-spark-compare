@@ -270,11 +270,11 @@ function normalizeTaskId(task: MineruExtractTaskPayload | null | undefined): str
       return null;
     }
 
-    if (!/^[0-9a-z-]+$/i.test(trimmed)) {
+    if (!/^[0-9a-z._-]+$/i.test(trimmed)) {
       return null;
     }
 
-    if (trimmed.length < 6) {
+    if (trimmed.length < 4) {
       return null;
     }
 
@@ -494,6 +494,28 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createOperationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `mineru-op-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function sanitizeLogPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== undefined && value !== null),
+  );
+}
+
+function logInfo(event: string, payload: Record<string, unknown>): void {
+  console.info(`MinerU ${event}`, sanitizeLogPayload(payload));
+}
+
+function logError(event: string, payload: Record<string, unknown>): void {
+  console.error(`MinerU ${event}`, sanitizeLogPayload(payload));
+}
+
 export interface MineruClientOptions {
   apiKey: string;
   baseUrl?: string;
@@ -541,7 +563,20 @@ export class MineruClient {
       });
     }
 
+    const operationId = createOperationId();
+    const operationStart = Date.now();
     const effectiveOrganizationId = organizationId?.trim() || this.organizationId;
+    const logContext = {
+      operationId,
+      documentId: documentId ?? undefined,
+      organizationId: effectiveOrganizationId,
+    } satisfies Record<string, unknown>;
+
+    let currentTaskId: string | undefined;
+    let lastRequestId: string | undefined;
+
+    logInfo('analyzeDocument.start', logContext);
+
     const bodyPayload: Record<string, unknown> = {
       document_url: trimmedSignedUrl,
       url: trimmedSignedUrl,
@@ -556,62 +591,146 @@ export class MineruClient {
       bodyPayload.organization_id = effectiveOrganizationId;
     }
 
-    const createResponse = await this.http.requestJson<MineruApiResponse<MineruExtractTaskPayload>>(
-      'extract/task',
-      {
-        method: 'POST',
-        body: JSON.stringify(bodyPayload),
-        organizationId: effectiveOrganizationId,
-      },
-    );
+    try {
+      const createResponse = await this.http.requestJson<MineruApiResponse<MineruExtractTaskPayload>>(
+        'extract/task',
+        {
+          method: 'POST',
+          body: JSON.stringify(bodyPayload),
+          organizationId: effectiveOrganizationId,
+        },
+      );
 
-    const initialPayload = unwrapMineruData(createResponse);
-    const initialTaskId = normalizeTaskId(initialPayload);
-    const initialStatus = normalizeTaskStatus(initialPayload);
-    const initialZipUrl = normalizeFullZipUrl(initialPayload);
+      lastRequestId = createResponse.requestId;
 
-    if (!initialTaskId) {
-      if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
-        return await this.downloadAndParseArchive(initialZipUrl);
+      const initialPayload = unwrapMineruData(createResponse);
+      const initialTaskId = normalizeTaskId(initialPayload);
+      const initialStatus = normalizeTaskStatus(initialPayload);
+      const initialZipUrl = normalizeFullZipUrl(initialPayload);
+
+      if (initialTaskId) {
+        currentTaskId = initialTaskId;
       }
 
-      throw new MineruClientError({
-        message: 'Mineru response missing task identifier',
-        code: 'MINERU_NO_TASK_ID',
-        context: {
-          endpoint: createResponse.endpoint,
-          status: createResponse.status,
-          requestId: createResponse.requestId,
-          responseBody: createResponse.rawBody,
-        },
+      logInfo('analyzeDocument.taskCreated', {
+        ...logContext,
+        requestId: createResponse.requestId,
+        taskId: currentTaskId,
+        status: initialStatus || undefined,
+        hasArchiveUrl: Boolean(initialZipUrl),
       });
-    }
 
-    if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
-      return await this.downloadAndParseArchive(initialZipUrl);
-    }
+      if (!initialTaskId) {
+        if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
+          const { analysis, requestId } = await this.downloadAndParseArchive(initialZipUrl);
+          lastRequestId = requestId;
+          const durationMs = Date.now() - operationStart;
+          logInfo('analyzeDocument.success', {
+            ...logContext,
+            requestId,
+            taskId: currentTaskId,
+            durationMs,
+            pages: analysis.pages.length,
+          });
+          return analysis;
+        }
 
-    const pollResult = await this.pollExtractTask(initialTaskId, {
-      pollIntervalMs,
-      timeoutMs,
-      organizationId: effectiveOrganizationId,
-    });
+        throw new MineruClientError({
+          message: 'Mineru response missing task identifier',
+          code: 'MINERU_NO_TASK_ID',
+          context: {
+            endpoint: createResponse.endpoint,
+            status: createResponse.status,
+            requestId: createResponse.requestId,
+            responseBody: createResponse.rawBody,
+          },
+        });
+      }
 
-    const fullZipUrl = normalizeFullZipUrl(pollResult.payload);
-    if (!fullZipUrl) {
-      throw new MineruClientError({
-        message: 'Mineru task did not provide a result archive URL',
-        code: 'MINERU_NO_RESULT_URL',
-        context: {
-          endpoint: pollResult.response.endpoint,
-          status: pollResult.response.status,
-          requestId: pollResult.response.requestId,
-          responseBody: pollResult.response.rawBody,
-        },
+      if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
+        const { analysis, requestId } = await this.downloadAndParseArchive(initialZipUrl);
+        lastRequestId = requestId;
+        const durationMs = Date.now() - operationStart;
+        logInfo('analyzeDocument.success', {
+          ...logContext,
+          requestId,
+          taskId: currentTaskId,
+          durationMs,
+          pages: analysis.pages.length,
+        });
+        return analysis;
+      }
+
+      let pollResult: {
+        payload: MineruExtractTaskPayload;
+        response: MineruHttpResponse<MineruApiResponse<MineruExtractTaskPayload>>;
+      };
+
+      try {
+        pollResult = await this.pollExtractTask(initialTaskId, {
+          pollIntervalMs,
+          timeoutMs,
+          organizationId: effectiveOrganizationId,
+        });
+        lastRequestId = pollResult.response.requestId;
+      } catch (error) {
+        if (error instanceof MineruClientError && error.context?.requestId) {
+          lastRequestId = error.context.requestId;
+        }
+        throw error;
+      }
+
+      const pollStatus = normalizeTaskStatus(pollResult.payload);
+      const fullZipUrl = normalizeFullZipUrl(pollResult.payload);
+
+      logInfo('analyzeDocument.taskPolled', {
+        ...logContext,
+        requestId: pollResult.response.requestId,
+        taskId: currentTaskId,
+        status: pollStatus || undefined,
+        hasArchiveUrl: Boolean(fullZipUrl),
       });
-    }
 
-    return await this.downloadAndParseArchive(fullZipUrl);
+      if (!fullZipUrl) {
+        throw new MineruClientError({
+          message: 'Mineru task did not provide a result archive URL',
+          code: 'MINERU_NO_RESULT_URL',
+          context: {
+            endpoint: pollResult.response.endpoint,
+            status: pollResult.response.status,
+            requestId: pollResult.response.requestId,
+            responseBody: pollResult.response.rawBody,
+          },
+        });
+      }
+
+      const { analysis, requestId: archiveRequestId } = await this.downloadAndParseArchive(fullZipUrl);
+      lastRequestId = archiveRequestId;
+
+      const durationMs = Date.now() - operationStart;
+      logInfo('analyzeDocument.success', {
+        ...logContext,
+        requestId: archiveRequestId,
+        taskId: currentTaskId,
+        durationMs,
+        pages: analysis.pages.length,
+      });
+
+      return analysis;
+    } catch (error) {
+      const durationMs = Date.now() - operationStart;
+      const message = error instanceof Error ? error.message : String(error);
+
+      logError('analyzeDocument.error', {
+        ...logContext,
+        taskId: currentTaskId,
+        requestId: lastRequestId,
+        durationMs,
+        message,
+      });
+
+      throw error;
+    }
   }
 
   private async pollExtractTask(
@@ -668,7 +787,10 @@ export class MineruClient {
     }
   }
 
-  private async downloadAndParseArchive(fullZipUrl: string): Promise<MineruAnalyzeDocumentResult> {
+  private async downloadAndParseArchive(fullZipUrl: string): Promise<{
+    analysis: MineruAnalyzeDocumentResult;
+    requestId: string;
+  }> {
     const archiveResponse = await this.http.requestArrayBuffer(fullZipUrl, {
       includeAuthHeader: false,
     });
@@ -694,7 +816,10 @@ export class MineruClient {
       const jsonText = await jsonEntry.async('string');
       const parsed = JSON.parse(jsonText);
 
-      return normalizeMineruAnalysis(parsed);
+      return {
+        analysis: normalizeMineruAnalysis(parsed),
+        requestId: archiveResponse.requestId,
+      };
     } catch (error) {
       if (error instanceof MineruClientError) {
         throw error;
