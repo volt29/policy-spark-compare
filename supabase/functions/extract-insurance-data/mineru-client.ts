@@ -106,6 +106,28 @@ interface MineruExtractTaskPayload {
     fullZipUrl?: string;
     [key: string]: unknown;
   } | null;
+  extract_result?:
+    | {
+      state?: MineruExtractTaskStatus | string;
+      status?: MineruExtractTaskStatus | string;
+      err_msg?: string | null;
+      error?: MineruExtractTaskError | null;
+      full_zip_url?: string;
+      fullZipUrl?: string;
+      result?: Record<string, unknown> | null;
+      [key: string]: unknown;
+    }
+    | Array<{
+      state?: MineruExtractTaskStatus | string;
+      status?: MineruExtractTaskStatus | string;
+      err_msg?: string | null;
+      error?: MineruExtractTaskError | null;
+      data_id?: string | null;
+      full_zip_url?: string;
+      fullZipUrl?: string;
+      result?: Record<string, unknown> | null;
+      [key: string]: unknown;
+    }>;
   error?: MineruExtractTaskError | null;
   err_msg?: string | null;
   [key: string]: unknown;
@@ -369,35 +391,112 @@ function normalizeFullZipUrl(payload: MineruExtractTaskPayload | null | undefine
     return null;
   }
 
-  const candidates: Array<unknown> = [
-    payload.full_zip_url,
-    payload.fullZipUrl,
-  ];
+  const directCandidates: string[] = [];
 
-  const result = payload.result;
-  if (result && typeof result === 'object') {
-    candidates.push((result as { full_zip_url?: unknown }).full_zip_url);
-    candidates.push((result as { fullZipUrl?: unknown }).fullZipUrl);
+  const enqueueString = (value: unknown) => {
+    if (typeof value !== 'string') {
+      return;
+    }
 
-    for (const value of Object.values(result)) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    directCandidates.push(trimmed);
+  };
+
+  enqueueString(payload.full_zip_url);
+  enqueueString(payload.fullZipUrl);
+
+  const queue: Array<unknown> = [];
+  const visited = new Set<object>();
+
+  const enqueueObject = (value: unknown) => {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+
+    if (visited.has(value as object)) {
+      return;
+    }
+
+    queue.push(value);
+  };
+
+  enqueueObject(payload);
+  enqueueObject(payload.result);
+
+  const extractResult =
+    (payload as { extract_result?: unknown }).extract_result
+    ?? (payload as { extractResult?: unknown }).extractResult;
+
+  if (Array.isArray(extractResult)) {
+    for (const entry of extractResult) {
+      enqueueObject(entry);
+    }
+  } else {
+    enqueueObject(extractResult);
+  }
+
+  while (queue.length > 0) {
+    const candidate = queue.shift();
+
+    if (!candidate || typeof candidate !== 'object') {
+      continue;
+    }
+
+    const candidateObject = candidate as Record<string, unknown>;
+    if (visited.has(candidateObject)) {
+      continue;
+    }
+
+    visited.add(candidateObject);
+
+    const entries = Array.isArray(candidate)
+      ? (candidate as unknown[]).map((value, index) => [String(index), value] as const)
+      : Object.entries(candidateObject);
+
+    for (const [key, value] of entries) {
+      const normalizedKey = normalizeKeySegment(key);
+
       if (typeof value === 'string') {
-        candidates.push(value);
+        const trimmed = value.trim();
+
+        if (!trimmed) {
+          continue;
+        }
+
+        if (normalizedKey.includes('zip') || normalizedKey.includes('url') || normalizedKey.includes('link')) {
+          directCandidates.push(trimmed);
+        } else if (/https?:\/\//i.test(trimmed) && trimmed.includes('.zip')) {
+          directCandidates.push(trimmed);
+        }
+
+        continue;
+      }
+
+      if (value && typeof value === 'object') {
+        enqueueObject(value);
       }
     }
   }
 
-  for (const candidate of candidates) {
-    if (typeof candidate !== 'string') {
+  for (const candidate of directCandidates) {
+    if (!candidate) {
       continue;
     }
 
-    const trimmed = candidate.trim();
-    if (trimmed) {
-      return trimmed;
+    if (/^https?:\/\//i.test(candidate)) {
+      return candidate;
+    }
+
+    if (candidate.includes('.zip')) {
+      return candidate;
     }
   }
 
-  return null;
+  return directCandidates.length > 0 ? directCandidates[0] : null;
 }
 
 function normalizeTaskStatus(payload: MineruExtractTaskPayload | null | undefined): string {
@@ -405,11 +504,49 @@ function normalizeTaskStatus(payload: MineruExtractTaskPayload | null | undefine
     return '';
   }
 
-  const candidates = [payload.state, payload.status];
+  const queue: Array<unknown> = [payload];
+  const visited = new Set<object>();
 
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) {
-      return candidate.trim().toLowerCase();
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+
+    if (visited.has(current as object)) {
+      continue;
+    }
+
+    visited.add(current as object);
+
+    const entries = Array.isArray(current)
+      ? (current as unknown[]).map((value, index) => [String(index), value] as const)
+      : Object.entries(current as Record<string, unknown>);
+
+    for (const [key, value] of entries) {
+      const normalizedKey = normalizeKeySegment(key);
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+
+        if (!trimmed) {
+          continue;
+        }
+
+        if (
+          normalizedKey === 'state'
+          || normalizedKey === 'status'
+          || normalizedKey.endsWith('state')
+          || normalizedKey.endsWith('status')
+        ) {
+          return trimmed.toLowerCase();
+        }
+      }
+
+      if (value && typeof value === 'object') {
+        queue.push(value);
+      }
     }
   }
 
@@ -421,15 +558,48 @@ function extractTaskErrorMessage(payload: MineruExtractTaskPayload | null | unde
     return 'Mineru task returned an empty payload';
   }
 
-  const errorMessages = [
-    payload.error?.message,
-    payload.error?.err_msg,
-    payload.err_msg,
-  ];
+  const queue: Array<unknown> = [payload];
+  const visited = new Set<object>();
 
-  for (const message of errorMessages) {
-    if (typeof message === 'string' && message.trim()) {
-      return message.trim();
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+
+    if (visited.has(current as object)) {
+      continue;
+    }
+
+    visited.add(current as object);
+
+    const entries = Array.isArray(current)
+      ? (current as unknown[]).map((value, index) => [String(index), value] as const)
+      : Object.entries(current as Record<string, unknown>);
+
+    for (const [key, value] of entries) {
+      const normalizedKey = normalizeKeySegment(key);
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+
+        if (!trimmed) {
+          continue;
+        }
+
+        if (
+          normalizedKey.includes('error')
+          || normalizedKey.includes('message')
+          || normalizedKey === 'errmsg'
+        ) {
+          return trimmed;
+        }
+      }
+
+      if (value && typeof value === 'object') {
+        queue.push(value);
+      }
     }
   }
 
@@ -799,10 +969,11 @@ export class MineruClient {
       const JSZip = await this.loadZipModule();
       const archive = await JSZip.loadAsync(archiveResponse.data);
       const files = archive?.files ?? {};
-      const jsonEntry = Object.values(files)
-        .find((file) => !file.dir && file.name.toLowerCase().endsWith('.json'));
+      const jsonEntries = Object.values(files)
+        .filter((file) => !file.dir && file.name.toLowerCase().endsWith('.json'))
+        .sort((a, b) => scoreArchiveEntry(b.name) - scoreArchiveEntry(a.name));
 
-      if (!jsonEntry) {
+      if (jsonEntries.length === 0) {
         throw new MineruClientError({
           message: 'Mineru archive missing JSON payload',
           code: 'MINERU_ARCHIVE_ERROR',
@@ -813,13 +984,43 @@ export class MineruClient {
         });
       }
 
-      const jsonText = await jsonEntry.async('string');
-      const parsed = JSON.parse(jsonText);
+      let fallbackAnalysis: MineruAnalyzeDocumentResult | null = null;
+      let lastParseError: Error | undefined;
 
-      return {
-        analysis: normalizeMineruAnalysis(parsed),
+      for (const entry of jsonEntries) {
+        try {
+          const jsonText = await entry.async('string');
+          const parsed = JSON.parse(jsonText);
+          const analysis = normalizeMineruAnalysis(parsed);
+
+          if (hasUsableAnalysis(analysis)) {
+            return { analysis, requestId: archiveResponse.requestId };
+          }
+
+          if (!fallbackAnalysis) {
+            fallbackAnalysis = analysis;
+          }
+        } catch (parseError) {
+          lastParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
+        }
+      }
+
+      if (fallbackAnalysis) {
+        return { analysis: fallbackAnalysis, requestId: archiveResponse.requestId };
+      }
+
+      const errorContext = {
+        endpoint: archiveResponse.endpoint,
         requestId: archiveResponse.requestId,
-      };
+        files: jsonEntries.map((entry) => entry.name),
+      } satisfies Record<string, unknown>;
+
+      throw new MineruClientError({
+        message: 'Mineru archive did not contain usable analysis JSON',
+        code: 'MINERU_ARCHIVE_ERROR',
+        context: errorContext,
+        cause: lastParseError,
+      });
     } catch (error) {
       if (error instanceof MineruClientError) {
         throw error;
@@ -849,34 +1050,477 @@ const KNOWN_SECTION_ENTRIES = Object.entries(SECTION_KEYWORD_MAP) as Array<
 
 const SNIPPET_MAX_LENGTH = 280;
 
-function normalizeMineruAnalysis(payload: any): MineruAnalyzeDocumentResult {
-  const root = payload?.data ?? payload ?? {};
+function scoreArchiveEntry(name: string): number {
+  const normalized = name.toLowerCase();
+  let score = 0;
 
-  const rawPages: any[] = Array.isArray(root.pages)
-    ? root.pages
-    : Array.isArray(root.document?.pages)
-      ? root.document.pages
-      : [];
+  if (!normalized.includes('/')) {
+    score += 5;
+  }
 
-  const pages = rawPages.map((page, index) => normalizeMineruPage(page, index));
+  if (normalized.includes('analysis')) {
+    score += 25;
+  }
 
-  const text = typeof root.text === 'string'
-    ? root.text
-    : typeof root.full_text === 'string'
-      ? root.full_text
-      : pages.map(page => page.text).join('\n\n');
+  if (normalized.includes('result')) {
+    score += 20;
+  }
 
-  const structureSummaryRaw = root.structureSummary
-    ?? root.structure_summary
-    ?? root.structural_summary
-    ?? root.structure
-    ?? null;
+  if (normalized.includes('document')) {
+    score += 15;
+  }
 
-  return {
-    pages,
-    text,
-    structureSummary: normalizeStructuralSummary(structureSummaryRaw),
+  if (normalized.includes('layout') || normalized.includes('page')) {
+    score += 10;
+  }
+
+  if (normalized.includes('meta') || normalized.includes('log')) {
+    score -= 10;
+  }
+
+  if (normalized.endsWith('jsonl')) {
+    score -= 5;
+  }
+
+  return score;
+}
+
+function hasUsableAnalysis(analysis: MineruAnalyzeDocumentResult): boolean {
+  if (analysis.pages.length > 0) {
+    return true;
+  }
+
+  if (typeof analysis.text === 'string' && analysis.text.trim().length > 0) {
+    return true;
+  }
+
+  return Boolean(analysis.structureSummary);
+}
+
+function collectAnalysisRoots(payload: any): any[] {
+  const candidates = new Set<object>();
+  const queue: Array<unknown> = [];
+
+  const enqueue = (value: unknown) => {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+
+    const objectValue = value as object;
+    if (candidates.has(objectValue)) {
+      return;
+    }
+
+    candidates.add(objectValue);
+    queue.push(objectValue);
   };
+
+  enqueue(payload);
+
+  const rootAny = payload as any;
+  enqueue(rootAny?.data);
+  enqueue(rootAny?.result);
+  enqueue(rootAny?.document);
+  enqueue(rootAny?.analysis);
+
+  const extractResultSources = [
+    rootAny?.extract_result,
+    rootAny?.extractResult,
+    rootAny?.data?.extract_result,
+    rootAny?.data?.extractResult,
+  ];
+
+  for (const source of extractResultSources) {
+    if (!source) {
+      continue;
+    }
+
+    if (Array.isArray(source)) {
+      for (const entry of source) {
+        enqueue(entry);
+
+        if (entry && typeof entry === 'object') {
+          const entryAny = entry as any;
+          enqueue(entryAny?.result);
+          enqueue(entryAny?.document);
+        }
+      }
+    } else {
+      enqueue(source);
+
+      if (source && typeof source === 'object') {
+        const sourceAny = source as any;
+        enqueue(sourceAny?.result);
+        enqueue(sourceAny?.document);
+      }
+    }
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+
+    const entries = Array.isArray(current)
+      ? current as unknown[]
+      : Object.values(current as Record<string, unknown>);
+
+    for (const value of entries) {
+      if (value && typeof value === 'object') {
+        const objectValue = value as object;
+        if (!candidates.has(objectValue)) {
+          candidates.add(objectValue);
+          queue.push(objectValue);
+        }
+      }
+    }
+  }
+
+  const result = Array.from(candidates);
+  result.sort((a, b) => scoreAnalysisRoot(b) - scoreAnalysisRoot(a));
+  return result;
+}
+
+function scoreAnalysisRoot(root: any): number {
+  if (!root || typeof root !== 'object') {
+    return 0;
+  }
+
+  let score = 0;
+
+  const objectRoot = root as any;
+
+  if (Array.isArray(objectRoot?.pages)) {
+    score += 40;
+  }
+
+  if (Array.isArray(objectRoot?.document?.pages)) {
+    score += 30;
+  }
+
+  if (Array.isArray(objectRoot?.result?.pages)) {
+    score += 20;
+  }
+
+  if (typeof objectRoot?.text === 'string' && objectRoot.text.trim()) {
+    score += 20;
+  }
+
+  if (
+    typeof objectRoot?.full_text === 'string'
+    || typeof objectRoot?.fullText === 'string'
+    || typeof objectRoot?.text_content === 'string'
+  ) {
+    score += 15;
+  }
+
+  if (
+    objectRoot?.structureSummary
+    || objectRoot?.structure_summary
+    || objectRoot?.structural_summary
+    || objectRoot?.structure
+  ) {
+    score += 10;
+  }
+
+  if (!Array.isArray(root) && typeof root === 'object') {
+    for (const key of Object.keys(objectRoot as Record<string, unknown>)) {
+      const normalized = normalizeKeySegment(key);
+
+      if (normalized.includes('page')) {
+        score += 5;
+      }
+
+      if (normalized.includes('result')) {
+        score += 3;
+      }
+
+      if (normalized.includes('document')) {
+        score += 2;
+      }
+    }
+  }
+
+  return score;
+}
+
+type PageSourceCandidate = {
+  pages: any[];
+  priority: number;
+};
+
+function looksLikePageItem(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  if (typeof record.text === 'string' && record.text.trim()) {
+    return true;
+  }
+
+  if (Array.isArray(record.blocks) && record.blocks.length > 0) {
+    return true;
+  }
+
+  if (
+    typeof record.pageNumber === 'number'
+    || typeof record.page_number === 'number'
+    || typeof record.page_index === 'number'
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function scorePageCandidate(pages: any[], priorityBoost: number): number {
+  let score = priorityBoost;
+
+  if (pages.length > 0) {
+    score += 1;
+  }
+
+  if (pages.some(looksLikePageItem)) {
+    score += 10;
+  }
+
+  return score;
+}
+
+function extractPagesFromRoot(root: any): MineruPage[] {
+  const candidates: PageSourceCandidate[] = [];
+
+  const addCandidate = (value: unknown, priorityBoost = 0) => {
+    if (!Array.isArray(value) || value.length === 0) {
+      return;
+    }
+
+    candidates.push({
+      pages: value,
+      priority: scorePageCandidate(value, priorityBoost),
+    });
+  };
+
+  const objectRoot = root as any;
+
+  addCandidate(objectRoot?.pages, 30);
+  addCandidate(objectRoot?.document?.pages, 25);
+  addCandidate(objectRoot?.document?.page_list, 20);
+  addCandidate(objectRoot?.document?.pageList, 20);
+  addCandidate(objectRoot?.result?.pages, 20);
+  addCandidate(objectRoot?.result?.document?.pages, 18);
+
+  const extractResult = objectRoot?.extract_result ?? objectRoot?.extractResult;
+
+  if (Array.isArray(extractResult)) {
+    for (const entry of extractResult) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+
+      const entryAny = entry as any;
+      addCandidate(entryAny?.pages, 15);
+      addCandidate(entryAny?.document?.pages, 15);
+      addCandidate(entryAny?.result?.pages, 12);
+      addCandidate(entryAny?.result?.document?.pages, 12);
+    }
+  } else if (extractResult && typeof extractResult === 'object') {
+    const entryAny = extractResult as any;
+    addCandidate(entryAny?.pages, 15);
+    addCandidate(entryAny?.document?.pages, 15);
+    addCandidate(entryAny?.result?.pages, 12);
+    addCandidate(entryAny?.result?.document?.pages, 12);
+  }
+
+  if (objectRoot && typeof objectRoot === 'object') {
+    for (const [key, value] of Object.entries(objectRoot as Record<string, unknown>)) {
+      if (Array.isArray(value)) {
+        const normalizedKey = normalizeKeySegment(key);
+        if (normalizedKey.includes('page') || normalizedKey.includes('sheet')) {
+          addCandidate(value, 16);
+        }
+      } else if (value && typeof value === 'object') {
+        const nested = value as any;
+        addCandidate(nested?.pages, 10);
+        addCandidate(nested?.page_list, 10);
+      }
+    }
+  }
+
+  if (Array.isArray(root)) {
+    for (const entry of root) {
+      const nestedPages = extractPagesFromRoot(entry);
+      if (nestedPages.length > 0) {
+        return nestedPages;
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.priority - a.priority);
+
+  for (const candidate of candidates) {
+    const normalized = candidate.pages.map((page, index) => normalizeMineruPage(page, index));
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  if (candidates.length > 0) {
+    return candidates[0]!.pages.map((page, index) => normalizeMineruPage(page, index));
+  }
+
+  return [];
+}
+
+function extractTextFromRoot(root: any, pages: MineruPage[]): string {
+  const candidates: string[] = [];
+
+  const addCandidate = (value: unknown) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed) {
+      candidates.push(trimmed);
+    }
+  };
+
+  const objectRoot = root as any;
+
+  addCandidate(objectRoot?.text);
+  addCandidate(objectRoot?.full_text);
+  addCandidate(objectRoot?.fullText);
+  addCandidate(objectRoot?.text_content);
+  addCandidate(objectRoot?.document?.text);
+  addCandidate(objectRoot?.document?.full_text);
+  addCandidate(objectRoot?.document?.fullText);
+  addCandidate(objectRoot?.result?.text);
+  addCandidate(objectRoot?.result?.full_text);
+  addCandidate(objectRoot?.result?.fullText);
+
+  const extractResult = objectRoot?.extract_result ?? objectRoot?.extractResult;
+  if (Array.isArray(extractResult)) {
+    for (const entry of extractResult) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+
+      const entryAny = entry as any;
+      addCandidate(entryAny?.text);
+      addCandidate(entryAny?.full_text);
+      addCandidate(entryAny?.fullText);
+      addCandidate(entryAny?.result?.text);
+      addCandidate(entryAny?.result?.full_text);
+      addCandidate(entryAny?.result?.fullText);
+    }
+  } else if (extractResult && typeof extractResult === 'object') {
+    const entryAny = extractResult as any;
+    addCandidate(entryAny?.text);
+    addCandidate(entryAny?.full_text);
+    addCandidate(entryAny?.fullText);
+    addCandidate(entryAny?.result?.text);
+    addCandidate(entryAny?.result?.full_text);
+    addCandidate(entryAny?.result?.fullText);
+  }
+
+  if (candidates.length > 0) {
+    return candidates[0]!;
+  }
+
+  if (pages.length > 0) {
+    const joined = pages.map((page) => page.text).filter(Boolean).join('\n\n');
+    return joined.trim();
+  }
+
+  return '';
+}
+
+function pickStructureSummaryCandidate(root: any): any {
+  if (!root || typeof root !== 'object') {
+    return null;
+  }
+
+  const objectRoot = root as any;
+
+  const directCandidates = [
+    objectRoot.structureSummary,
+    objectRoot.structure_summary,
+    objectRoot.structural_summary,
+    objectRoot.structure,
+  ];
+
+  for (const candidate of directCandidates) {
+    if (candidate && typeof candidate === 'object') {
+      return candidate;
+    }
+  }
+
+  const queue: Array<unknown> = [
+    objectRoot.document,
+    objectRoot.result,
+    objectRoot.analysis,
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+
+    const currentObject = current as any;
+
+    const candidate =
+      currentObject.structureSummary
+      ?? currentObject.structure_summary
+      ?? currentObject.structural_summary
+      ?? currentObject.structure
+      ?? null;
+
+    if (candidate && typeof candidate === 'object') {
+      return candidate;
+    }
+
+    for (const value of Object.values(currentObject as Record<string, unknown>)) {
+      if (value && typeof value === 'object') {
+        queue.push(value);
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizeMineruAnalysis(payload: any): MineruAnalyzeDocumentResult {
+  const candidates = collectAnalysisRoots(payload);
+  let fallback: MineruAnalyzeDocumentResult | null = null;
+
+  for (const candidate of candidates) {
+    const pages = extractPagesFromRoot(candidate);
+    const text = extractTextFromRoot(candidate, pages);
+    const structureSummaryRaw = pickStructureSummaryCandidate(candidate);
+
+    const analysis: MineruAnalyzeDocumentResult = {
+      pages,
+      text,
+      structureSummary: normalizeStructuralSummary(structureSummaryRaw),
+    };
+
+    if (hasUsableAnalysis(analysis)) {
+      return analysis;
+    }
+
+    if (!fallback) {
+      fallback = analysis;
+    }
+  }
+
+  return fallback ?? { pages: [], text: '', structureSummary: null };
 }
 
 function normalizeMineruPage(raw: any, index: number): MineruPage {
