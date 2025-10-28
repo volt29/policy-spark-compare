@@ -4,12 +4,12 @@ import {
   SECTION_KEYWORD_MAP,
   SectionType,
 } from './classifier.ts';
+import { MineruClientError, MineruHttpError } from './mineru-errors.ts';
+import { MineruHttpClient, MineruHttpResponse } from './mineru-http-client.ts';
 
-const DEFAULT_MINERU_BASE_URL = "https://mineru.net/api/v4" as const;
-
-type FetchImpl = typeof fetch;
-
-type HeadersLike = HeadersInit | undefined;
+const DEFAULT_POLL_INTERVAL_MS = 2500;
+const MIN_POLL_INTERVAL_MS = 250;
+const DEFAULT_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface MineruBoundingBox {
   x: number;
@@ -76,6 +76,7 @@ type MineruExtractTaskStatus =
   | 'succeeded'
   | 'completed'
   | 'success'
+  | 'done'
   | 'failed'
   | 'error'
   | 'cancelled'
@@ -84,24 +85,41 @@ type MineruExtractTaskStatus =
 interface MineruExtractTaskError {
   code?: string;
   message?: string;
+  err_msg?: string;
 }
 
 interface MineruExtractTaskPayload {
-  task_id: string;
-  status: MineruExtractTaskStatus | string;
+  task_id?: string;
+  taskId?: string;
+  id?: string;
+  task_identifier?: string;
+  taskIdentifier?: string;
+  task_uuid?: string;
+  taskUuid?: string;
+  uuid?: string;
+  state?: MineruExtractTaskStatus | string;
+  status?: MineruExtractTaskStatus | string;
+  full_zip_url?: string;
+  fullZipUrl?: string;
   result?: {
     full_zip_url?: string;
     fullZipUrl?: string;
     [key: string]: unknown;
-  };
+  } | null;
   error?: MineruExtractTaskError | null;
+  err_msg?: string | null;
   [key: string]: unknown;
 }
 
-interface MineruExtractTaskResponse extends MineruExtractTaskPayload {}
+interface MineruApiResponse<T> {
+  code?: number;
+  msg?: string | null;
+  trace_id?: string | null;
+  data?: T | null;
+}
 
-const SUCCESSFUL_TASK_STATES = new Set<string>(['succeeded', 'completed', 'success']);
-const FAILURE_TASK_STATES = new Set<string>(['failed', 'error', 'cancelled', 'canceled']);
+const SUCCESSFUL_TASK_STATES = new Set<string>(['succeeded', 'completed', 'success', 'done']);
+const FAILURE_TASK_STATES = new Set<string>(['failed', 'error', 'cancelled', 'canceled', 'timeout']);
 
 type JSZipArchiveFile = {
   name: string;
@@ -159,19 +177,63 @@ async function loadJSZip(): Promise<JSZipStatic> {
   throw new Error('Unable to load JSZip module');
 }
 
-const TASK_IDENTIFIER_KEYS = [
-  'task_id',
-  'taskId',
-  'id',
-  'task_identifier',
-  'taskIdentifier',
-  'task_uuid',
-  'taskUuid',
-  'uuid',
-  'task',
-] as const;
+const KEY_NORMALIZATION_REGEX = /[^a-z0-9]/gi;
 
-function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): string | null {
+const DIRECT_TASK_IDENTIFIER_KEYS = new Set([
+  'task',
+  'taskid',
+  'taskidentifier',
+  'taskuuid',
+  'taskkey',
+  'taskref',
+  'taskcode',
+  'jobid',
+  'jobidentifier',
+]);
+
+const INHERITED_IDENTIFIER_KEYS = new Set(['id', 'uuid', 'identifier']);
+
+function normalizeKeySegment(segment: string): string {
+  return segment.replace(KEY_NORMALIZATION_REGEX, '').toLowerCase();
+}
+
+function pathHasTaskHint(path: string[]): boolean {
+  return path.some((segment) => segment.includes('task') || segment.includes('job'));
+}
+
+function shouldUseKeyForTaskId(normalizedKey: string, normalizedPath: string[]): boolean {
+  if (!normalizedKey) {
+    return false;
+  }
+
+  if (DIRECT_TASK_IDENTIFIER_KEYS.has(normalizedKey)) {
+    return true;
+  }
+
+  if (normalizedKey.includes('task') && normalizedKey.includes('id')) {
+    return true;
+  }
+
+  if (normalizedKey.includes('task') && normalizedKey.includes('identifier')) {
+    return true;
+  }
+
+  if (normalizedKey.includes('task') && normalizedKey.includes('uuid')) {
+    return true;
+  }
+
+  if (normalizedKey.includes('job') && normalizedKey.includes('id')) {
+    return true;
+  }
+
+  if (INHERITED_IDENTIFIER_KEYS.has(normalizedKey)) {
+    return pathHasTaskHint(normalizedPath);
+  }
+
+  return false;
+}
+
+function normalizeTaskId(task: MineruExtractTaskPayload | null | undefined): string | null {
   const extractCandidate = (value: unknown): string | null => {
     if (typeof value === 'string') {
       const trimmed = value.trim();
@@ -185,57 +247,116 @@ function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): st
     return null;
   };
 
-  const directCandidate = extractCandidate(task);
+  const acceptCandidate = (
+    candidate: string | null,
+    normalizedKey?: string,
+    normalizedPath: string[] = [],
+  ): string | null => {
+    if (!candidate) {
+      return null;
+    }
+
+    const trimmed = candidate.trim();
+
+    if (!trimmed) {
+      return null;
+    }
+
+    if (trimmed.includes('://')) {
+      return null;
+    }
+
+    if (/\s/.test(trimmed)) {
+      return null;
+    }
+
+    if (!/^[0-9a-z-]+$/i.test(trimmed)) {
+      return null;
+    }
+
+    if (trimmed.length < 6) {
+      return null;
+    }
+
+    const hasDigit = /[0-9]/.test(trimmed);
+
+    if (!hasDigit) {
+      const strongContext = normalizedKey
+        ? shouldUseKeyForTaskId(normalizedKey, normalizedPath)
+        : pathHasTaskHint(normalizedPath);
+
+      if (!strongContext) {
+        return null;
+      }
+
+      if (trimmed.length < 8) {
+        return null;
+      }
+    }
+
+    return trimmed;
+  };
+
+  const directCandidate = acceptCandidate(extractCandidate(task), undefined, []);
   if (directCandidate) {
     return directCandidate;
   }
 
   const visited = new Set<object>();
-  const queue: unknown[] = [];
+  const queue: Array<{ value: unknown; path: string[] }> = [];
 
   if (task && typeof task === 'object') {
-    queue.push(task);
+    queue.push({ value: task, path: [] });
   }
 
   while (queue.length > 0) {
     const current = queue.shift();
 
-    if (!current || typeof current !== 'object') {
+    if (!current) {
       continue;
     }
 
-    if (visited.has(current as object)) {
+    const { value, path } = current;
+
+    if (!value || typeof value !== 'object') {
       continue;
     }
 
-    visited.add(current as object);
+    if (visited.has(value as object)) {
+      continue;
+    }
 
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        const candidate = extractCandidate(item);
-        if (candidate) {
+    visited.add(value as object);
+
+    const normalizedPath = path.map(normalizeKeySegment).filter(Boolean);
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const candidate = acceptCandidate(extractCandidate(item), undefined, normalizedPath);
+        if (candidate && pathHasTaskHint(normalizedPath)) {
           return candidate;
         }
 
         if (item && typeof item === 'object' && !visited.has(item as object)) {
-          queue.push(item);
+          queue.push({ value: item, path });
         }
       }
+
       continue;
     }
 
-    const record = current as Record<string, unknown>;
+    const record = value as Record<string, unknown>;
 
-    for (const key of TASK_IDENTIFIER_KEYS) {
-      const candidate = extractCandidate(record[key]);
-      if (candidate) {
+    for (const [rawKey, rawValue] of Object.entries(record)) {
+      const normalizedKey = normalizeKeySegment(rawKey);
+      const candidate = acceptCandidate(extractCandidate(rawValue), normalizedKey, normalizedPath);
+
+      if (candidate && shouldUseKeyForTaskId(normalizedKey, normalizedPath)) {
         return candidate;
       }
-    }
 
-    for (const value of Object.values(record)) {
-      if (value && typeof value === 'object' && !visited.has(value as object)) {
-        queue.push(value);
+      if (rawValue && typeof rawValue === 'object' && !visited.has(rawValue as object)) {
+        queue.push({ value: rawValue, path: [...path, rawKey] });
       }
     }
   }
@@ -243,251 +364,293 @@ function normalizeTaskId(task: MineruExtractTaskResponse | null | undefined): st
   return null;
 }
 
-function normalizeFullZipUrl(result: MineruExtractTaskPayload['result'] | null | undefined): string | null {
-  if (!result) {
+function normalizeFullZipUrl(payload: MineruExtractTaskPayload | null | undefined): string | null {
+  if (!payload || typeof payload !== 'object') {
     return null;
   }
 
-  const candidates = [
-    (result as { full_zip_url?: unknown }).full_zip_url,
-    (result as { fullZipUrl?: unknown }).fullZipUrl,
+  const candidates: Array<unknown> = [
+    payload.full_zip_url,
+    payload.fullZipUrl,
   ];
 
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string') {
-      const trimmed = candidate.trim();
-      if (trimmed) {
-        return trimmed;
+  const result = payload.result;
+  if (result && typeof result === 'object') {
+    candidates.push((result as { full_zip_url?: unknown }).full_zip_url);
+    candidates.push((result as { fullZipUrl?: unknown }).fullZipUrl);
+
+    for (const value of Object.values(result)) {
+      if (typeof value === 'string') {
+        candidates.push(value);
       }
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+
+    const trimmed = candidate.trim();
+    if (trimmed) {
+      return trimmed;
     }
   }
 
   return null;
 }
 
-function sanitizeBaseUrl(url: string): string {
-  let sanitized = url.trim();
+function normalizeTaskStatus(payload: MineruExtractTaskPayload | null | undefined): string {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
 
-  sanitized = sanitized.replace(/\/+$/, "");
+  const candidates = [payload.state, payload.status];
 
-  const lower = sanitized.toLowerCase();
-  const legacySuffixes = [
-    "/document/analyze",
-    "/documents/analyze",
-  ];
-
-  for (const suffix of legacySuffixes) {
-    if (lower.endsWith(suffix)) {
-      return sanitized.slice(0, sanitized.length - suffix.length);
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim().toLowerCase();
     }
   }
 
-  return sanitized;
+  return '';
 }
 
-function pickBaseUrl(baseUrl?: string): string {
-  const envOverride = typeof Deno !== 'undefined'
-    ? Deno.env.get("MINERU_API_URL")?.trim()
-    : undefined;
-  const candidate = baseUrl?.trim() || envOverride || DEFAULT_MINERU_BASE_URL;
+function extractTaskErrorMessage(payload: MineruExtractTaskPayload | null | undefined): string {
+  if (!payload || typeof payload !== 'object') {
+    return 'Mineru task returned an empty payload';
+  }
 
-  return sanitizeBaseUrl(candidate);
+  const errorMessages = [
+    payload.error?.message,
+    payload.error?.err_msg,
+    payload.err_msg,
+  ];
+
+  for (const message of errorMessages) {
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  const status = normalizeTaskStatus(payload) || 'unknown';
+  return `Mineru task ended with status "${status}"`;
+}
+
+function unwrapMineruData(
+  response: MineruHttpResponse<MineruApiResponse<MineruExtractTaskPayload>>,
+): MineruExtractTaskPayload {
+  const root = response.data;
+
+  if (!root || typeof root !== 'object') {
+    throw createInvalidResponseError('Mineru response body is not an object', response);
+  }
+
+  const code = typeof root.code === 'number' ? root.code : undefined;
+  if (code === undefined) {
+    throw createInvalidResponseError('Mineru response missing code field', response);
+  }
+
+  if (code !== 0) {
+    const message = root.msg ? String(root.msg) : 'unknown error';
+    throw new MineruClientError({
+      message: `Mineru API responded with code ${code}: ${message}`,
+      code: 'MINERU_TASK_FAILED',
+      context: {
+        endpoint: response.endpoint,
+        status: response.status,
+        requestId: response.requestId,
+        responseBody: response.rawBody,
+        hint: root.trace_id ?? undefined,
+      },
+    });
+  }
+
+  const payload = root.data;
+  if (!payload || typeof payload !== 'object') {
+    throw createInvalidResponseError('Mineru response missing data payload', response);
+  }
+
+  return payload as MineruExtractTaskPayload;
+}
+
+function createInvalidResponseError(
+  message: string,
+  response: MineruHttpResponse<unknown>,
+): MineruClientError {
+  return new MineruClientError({
+    message,
+    code: 'MINERU_INVALID_RESPONSE',
+    context: {
+      endpoint: response.endpoint,
+      status: response.status,
+      requestId: response.requestId,
+      responseBody: response.rawBody,
+    },
+  });
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export interface MineruClientOptions {
   apiKey: string;
   baseUrl?: string;
-  fetchImpl?: FetchImpl;
+  fetchImpl?: typeof fetch;
   organizationId?: string;
   zipLoader?: () => Promise<JSZipStatic>;
-}
-
-export class MineruHttpError extends Error {
-  readonly status: number;
-  readonly endpoint: string;
-  readonly hint?: string;
-
-  constructor({ message, status, endpoint, hint }: {
-    message: string;
-    status: number;
-    endpoint: string;
-    hint?: string;
-  }) {
-    super(message);
-    this.name = 'MineruHttpError';
-    this.status = status;
-    this.endpoint = endpoint;
-    this.hint = hint;
-  }
+  defaultTimeoutMs?: number;
+  maxRetries?: number;
 }
 
 export class MineruClient {
-  private readonly baseUrl: string;
-  private readonly apiKey: string;
-  private readonly fetchImpl: FetchImpl;
-  private readonly organizationId?: string;
+  private readonly http: MineruHttpClient;
   private readonly loadZipModule: () => Promise<JSZipStatic>;
+  private readonly organizationId?: string;
 
-  constructor({ apiKey, baseUrl, fetchImpl = fetch, organizationId, zipLoader }: MineruClientOptions) {
-    this.apiKey = apiKey;
-    this.baseUrl = pickBaseUrl(baseUrl);
-    this.fetchImpl = fetchImpl;
-    this.organizationId = organizationId?.trim();
+  constructor({
+    apiKey,
+    baseUrl,
+    fetchImpl = fetch,
+    organizationId,
+    zipLoader,
+    defaultTimeoutMs,
+    maxRetries,
+  }: MineruClientOptions) {
+    this.http = new MineruHttpClient({
+      apiKey,
+      baseUrl,
+      fetchImpl,
+      organizationId,
+      defaultTimeoutMs,
+      maxRetries,
+    });
+    this.organizationId = organizationId?.trim() || undefined;
     this.loadZipModule = zipLoader ?? loadJSZip;
   }
 
-  private createAuthHeaders(organizationIdOverride?: string): Headers {
-    const headers = new Headers({
-      Authorization: `Bearer ${this.apiKey}`,
-    });
+  async analyzeDocument(options: MineruAnalyzeDocumentOptions): Promise<MineruAnalyzeDocumentResult> {
+    const { signedUrl, documentId, organizationId, pollIntervalMs, timeoutMs } = options;
+    const trimmedSignedUrl = typeof signedUrl === 'string' ? signedUrl.trim() : '';
 
-    const effectiveOrganizationId = organizationIdOverride?.trim() || this.organizationId;
+    if (!trimmedSignedUrl) {
+      throw new MineruClientError({
+        message: 'MineruClient.analyzeDocument: signedUrl must be a non-empty string',
+        code: 'MINERU_INVALID_ARGUMENT',
+      });
+    }
+
+    const effectiveOrganizationId = organizationId?.trim() || this.organizationId;
+    const bodyPayload: Record<string, unknown> = {
+      document_url: trimmedSignedUrl,
+      url: trimmedSignedUrl,
+    };
+
+    if (documentId) {
+      bodyPayload.document_id = documentId;
+      bodyPayload.data_id = documentId;
+    }
+
     if (effectiveOrganizationId) {
-      headers.set('X-Organization-Id', effectiveOrganizationId);
+      bodyPayload.organization_id = effectiveOrganizationId;
     }
 
-    return headers;
-  }
+    const createResponse = await this.http.requestJson<MineruApiResponse<MineruExtractTaskPayload>>(
+      'extract/task',
+      {
+        method: 'POST',
+        body: JSON.stringify(bodyPayload),
+        organizationId: effectiveOrganizationId,
+      },
+    );
 
-  private buildUrl(path: string): string {
-    const normalizedPath = path.replace(/^\/+/, '');
+    const initialPayload = unwrapMineruData(createResponse);
+    const initialTaskId = normalizeTaskId(initialPayload);
+    const initialStatus = normalizeTaskStatus(initialPayload);
+    const initialZipUrl = normalizeFullZipUrl(initialPayload);
 
-    if (!normalizedPath) {
-      return this.baseUrl;
-    }
-
-    try {
-      const base = new URL(this.baseUrl);
-      const baseSegments = base.pathname.split('/').filter(Boolean);
-      const pathSegments = normalizedPath.split('/').filter(Boolean);
-
-      let overlap = 0;
-      const maxOverlap = Math.min(baseSegments.length, pathSegments.length);
-
-      for (let i = 1; i <= maxOverlap; i++) {
-        let match = true;
-
-        for (let j = 0; j < i; j++) {
-          const baseSegment = baseSegments[baseSegments.length - i + j];
-          const pathSegment = pathSegments[j];
-
-          if (!baseSegment || baseSegment.toLowerCase() !== pathSegment.toLowerCase()) {
-            match = false;
-            break;
-          }
-        }
-
-        if (match) {
-          overlap = i;
-        }
+    if (!initialTaskId) {
+      if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
+        return await this.downloadAndParseArchive(initialZipUrl);
       }
 
-      const combinedSegments = [...baseSegments, ...pathSegments.slice(overlap)];
-      base.pathname = `/${combinedSegments.join('/')}`;
-
-      return base.toString();
-    } catch {
-      const trimmedBase = this.baseUrl.replace(/\/+$/, '');
-      return `${trimmedBase}/${normalizedPath}`;
-    }
-  }
-
-  private buildHeaders(
-    additional?: HeadersLike,
-    hasBody: boolean = false,
-    organizationIdOverride?: string,
-  ): Headers {
-    const headers = this.createAuthHeaders(organizationIdOverride);
-
-    if (hasBody) {
-      const additionalHeaders = additional ? new Headers(additional) : null;
-      if (!additionalHeaders || !additionalHeaders.has('Content-Type')) {
-        headers.set('Content-Type', 'application/json');
-      }
-    }
-
-    if (additional) {
-      const additionalHeaders = new Headers(additional);
-      additionalHeaders.forEach((value, key) => {
-        headers.set(key, value);
+      throw new MineruClientError({
+        message: 'Mineru response missing task identifier',
+        code: 'MINERU_NO_TASK_ID',
+        context: {
+          endpoint: createResponse.endpoint,
+          status: createResponse.status,
+          requestId: createResponse.requestId,
+          responseBody: createResponse.rawBody,
+        },
       });
     }
 
-    return headers;
-  }
+    if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
+      return await this.downloadAndParseArchive(initialZipUrl);
+    }
 
-  async request<T>(
-    path: string,
-    init: RequestInit = {},
-    organizationIdOverride?: string,
-  ): Promise<T> {
-    const { headers, body, method = "GET", ...rest } = init;
-    const endpoint = this.buildUrl(path);
-
-    const response = await this.fetchImpl(endpoint, {
-      ...rest,
-      method,
-      body,
-      headers: this.buildHeaders(headers, typeof body !== 'undefined', organizationIdOverride),
+    const pollResult = await this.pollExtractTask(initialTaskId, {
+      pollIntervalMs,
+      timeoutMs,
+      organizationId: effectiveOrganizationId,
     });
 
-    if (!response.ok) {
-      const errorBody = await response.text();
-      const hint = response.status === 404
-        ? 'document not found / sprawdź endpoint'
-        : undefined;
-
-      throw new MineruHttpError({
-        message: `Mineru request failed (${response.status}): ${errorBody}`,
-        status: response.status,
-        endpoint,
-        hint,
+    const fullZipUrl = normalizeFullZipUrl(pollResult.payload);
+    if (!fullZipUrl) {
+      throw new MineruClientError({
+        message: 'Mineru task did not provide a result archive URL',
+        code: 'MINERU_NO_RESULT_URL',
+        context: {
+          endpoint: pollResult.response.endpoint,
+          status: pollResult.response.status,
+          requestId: pollResult.response.requestId,
+          responseBody: pollResult.response.rawBody,
+        },
       });
     }
 
-    if (response.status === 204) {
-      return undefined as T;
-    }
-
-    const responseText = await response.text();
-    if (!responseText) {
-      return undefined as T;
-    }
-
-    return JSON.parse(responseText) as T;
+    return await this.downloadAndParseArchive(fullZipUrl);
   }
 
   private async pollExtractTask(
     taskId: string,
-    options: { pollIntervalMs?: number; timeoutMs?: number; organizationIdOverride?: string } = {},
-  ): Promise<MineruExtractTaskResponse> {
-    const endpointPath = `extract/task/${taskId}`;
-    const endpoint = this.buildUrl(endpointPath);
-    const interval = Math.max(options.pollIntervalMs ?? 2500, 250);
-    const timeout = options.timeoutMs ?? 5 * 60 * 1000;
+    options: { pollIntervalMs?: number; timeoutMs?: number; organizationId?: string } = {},
+  ): Promise<{
+    payload: MineruExtractTaskPayload;
+    response: MineruHttpResponse<MineruApiResponse<MineruExtractTaskPayload>>;
+  }> {
+    const interval = Math.max(options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, MIN_POLL_INTERVAL_MS);
+    const timeout = options.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
     const start = Date.now();
+    const organizationOverride = options.organizationId?.trim() || undefined;
 
     while (true) {
-      const response = await this.request<MineruExtractTaskResponse>(
-        endpointPath,
-        {},
-        options.organizationIdOverride,
+      const response = await this.http.requestJson<MineruApiResponse<MineruExtractTaskPayload>>(
+        `extract/task/${taskId}`,
+        { organizationId: organizationOverride },
       );
-      const statusRaw = typeof response?.status === 'string' ? response.status.toLowerCase() : '';
 
-      if (SUCCESSFUL_TASK_STATES.has(statusRaw)) {
-        return response;
+      const payload = unwrapMineruData(response);
+      const status = normalizeTaskStatus(payload);
+
+      if (SUCCESSFUL_TASK_STATES.has(status)) {
+        return { payload, response };
       }
 
-      if (FAILURE_TASK_STATES.has(statusRaw)) {
-        const errorMessage = response?.error?.message || `Mineru task ended with status "${response?.status}"`;
-        const hint = response?.error?.code;
-
-        throw new MineruHttpError({
+      if (FAILURE_TASK_STATES.has(status)) {
+        const errorMessage = extractTaskErrorMessage(payload);
+        throw new MineruClientError({
           message: `Mineru extraction task failed: ${errorMessage}`,
-          status: 502,
-          endpoint,
-          hint,
+          code: 'MINERU_TASK_FAILED',
+          context: {
+            endpoint: response.endpoint,
+            status: response.status,
+            requestId: response.requestId,
+            responseBody: response.rawBody,
+            hint: payload.error?.code ?? payload.err_msg ?? undefined,
+          },
         });
       }
 
@@ -495,38 +658,37 @@ export class MineruClient {
         throw new MineruHttpError({
           message: `Mineru extraction task polling timed out after ${timeout}ms`,
           status: 504,
-          endpoint,
+          endpoint: response.endpoint,
+          requestId: response.requestId,
+          code: 'MINERU_TIMEOUT',
         });
       }
 
-      await this.delay(interval);
+      await delay(interval);
     }
   }
 
   private async downloadAndParseArchive(fullZipUrl: string): Promise<MineruAnalyzeDocumentResult> {
-    const response = await this.fetchImpl(fullZipUrl);
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-
-      throw new MineruHttpError({
-        message: `Mineru archive download failed (${response.status}): ${body}`,
-        status: response.status,
-        endpoint: fullZipUrl,
-      });
-    }
-
-    const zipBuffer = await response.arrayBuffer();
+    const archiveResponse = await this.http.requestArrayBuffer(fullZipUrl, {
+      includeAuthHeader: false,
+    });
 
     try {
       const JSZip = await this.loadZipModule();
-      const archive = await JSZip.loadAsync(zipBuffer);
+      const archive = await JSZip.loadAsync(archiveResponse.data);
       const files = archive?.files ?? {};
       const jsonEntry = Object.values(files)
         .find((file) => !file.dir && file.name.toLowerCase().endsWith('.json'));
 
       if (!jsonEntry) {
-        throw new Error('Mineru archive missing JSON payload');
+        throw new MineruClientError({
+          message: 'Mineru archive missing JSON payload',
+          code: 'MINERU_ARCHIVE_ERROR',
+          context: {
+            endpoint: archiveResponse.endpoint,
+            requestId: archiveResponse.requestId,
+          },
+        });
       }
 
       const jsonText = await jsonEntry.async('string');
@@ -534,71 +696,25 @@ export class MineruClient {
 
       return normalizeMineruAnalysis(parsed);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to process Mineru archive: ${message}`);
-    }
-  }
-
-  private async delay(ms: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  async analyzeDocument(options: MineruAnalyzeDocumentOptions): Promise<MineruAnalyzeDocumentResult> {
-    const { signedUrl, documentId, organizationId, pollIntervalMs, timeoutMs } = options;
-
-    if (!signedUrl || typeof signedUrl !== 'string') {
-      throw new Error('MineruClient.analyzeDocument: signedUrl must be a non-empty string');
-    }
-
-    const effectiveOrganizationId = organizationId?.trim() || this.organizationId;
-
-    const bodyPayload: Record<string, unknown> = {
-      document_url: signedUrl,
-      document_id: documentId,
-    };
-
-    if (effectiveOrganizationId) {
-      bodyPayload.organization_id = effectiveOrganizationId;
-    }
-
-    const task = await this.request<MineruExtractTaskResponse>(
-      'extract/task',
-      {
-        method: 'POST',
-        body: JSON.stringify(bodyPayload),
-      },
-      effectiveOrganizationId,
-    );
-
-    const initialTaskId = normalizeTaskId(task);
-    const initialStatus = typeof task?.status === 'string' ? task.status.toLowerCase() : '';
-    const initialZipUrl = normalizeFullZipUrl(task?.result);
-
-    if (!initialTaskId) {
-      if (initialZipUrl && SUCCESSFUL_TASK_STATES.has(initialStatus)) {
-        return await this.downloadAndParseArchive(initialZipUrl);
+      if (error instanceof MineruClientError) {
+        throw error;
       }
 
-      throw new Error('MineruClient.analyzeDocument: missing task identifier in response');
+      const message = error instanceof Error ? error.message : String(error);
+      throw new MineruClientError({
+        message: `Failed to process Mineru archive: ${message}`,
+        code: 'MINERU_ARCHIVE_ERROR',
+        context: {
+          endpoint: archiveResponse.endpoint,
+          requestId: archiveResponse.requestId,
+        },
+        cause: error,
+      });
     }
-
-    const pollResult = await this.pollExtractTask(initialTaskId, {
-      pollIntervalMs,
-      timeoutMs,
-      organizationIdOverride: effectiveOrganizationId,
-    });
-
-    const fullZipUrl = normalizeFullZipUrl(pollResult?.result);
-
-    if (!fullZipUrl) {
-      throw new Error('MineruClient.analyzeDocument: Mineru task did not provide a result archive URL');
-    }
-
-    return await this.downloadAndParseArchive(fullZipUrl);
   }
 
   getBaseUrl(): string {
-    return this.baseUrl;
+    return this.http.getBaseUrl();
   }
 }
 
@@ -906,4 +1022,9 @@ export function convertMineruPagesToSections(pages: MineruPage[]): MineruSegment
   return { sections, sources };
 }
 
-export { DEFAULT_MINERU_BASE_URL, pickBaseUrl as resolveMineruBaseUrl, sanitizeBaseUrl };
+export {
+  DEFAULT_MINERU_BASE_URL,
+  pickBaseUrl as resolveMineruBaseUrl,
+  sanitizeBaseUrl,
+} from './mineru-http-client.ts';
+export { MineruClientError, MineruHttpError } from './mineru-errors.ts';
