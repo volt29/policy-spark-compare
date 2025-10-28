@@ -177,17 +177,61 @@ async function loadJSZip(): Promise<JSZipStatic> {
   throw new Error('Unable to load JSZip module');
 }
 
-const TASK_IDENTIFIER_KEYS = [
-  'task_id',
-  'taskId',
-  'id',
-  'task_identifier',
-  'taskIdentifier',
-  'task_uuid',
-  'taskUuid',
-  'uuid',
+const KEY_NORMALIZATION_REGEX = /[^a-z0-9]/gi;
+
+const DIRECT_TASK_IDENTIFIER_KEYS = new Set([
   'task',
-] as const;
+  'taskid',
+  'taskidentifier',
+  'taskuuid',
+  'taskkey',
+  'taskref',
+  'taskcode',
+  'jobid',
+  'jobidentifier',
+]);
+
+const INHERITED_IDENTIFIER_KEYS = new Set(['id', 'uuid', 'identifier']);
+
+function normalizeKeySegment(segment: string): string {
+  return segment.replace(KEY_NORMALIZATION_REGEX, '').toLowerCase();
+}
+
+function pathHasTaskHint(path: string[]): boolean {
+  return path.some((segment) => segment.includes('task') || segment.includes('job'));
+}
+
+function shouldUseKeyForTaskId(normalizedKey: string, normalizedPath: string[]): boolean {
+  if (!normalizedKey) {
+    return false;
+  }
+
+  if (DIRECT_TASK_IDENTIFIER_KEYS.has(normalizedKey)) {
+    return true;
+  }
+
+  if (normalizedKey.includes('task') && normalizedKey.includes('id')) {
+    return true;
+  }
+
+  if (normalizedKey.includes('task') && normalizedKey.includes('identifier')) {
+    return true;
+  }
+
+  if (normalizedKey.includes('task') && normalizedKey.includes('uuid')) {
+    return true;
+  }
+
+  if (normalizedKey.includes('job') && normalizedKey.includes('id')) {
+    return true;
+  }
+
+  if (INHERITED_IDENTIFIER_KEYS.has(normalizedKey)) {
+    return pathHasTaskHint(normalizedPath);
+  }
+
+  return false;
+}
 
 function normalizeTaskId(task: MineruExtractTaskPayload | null | undefined): string | null {
   const extractCandidate = (value: unknown): string | null => {
@@ -203,57 +247,116 @@ function normalizeTaskId(task: MineruExtractTaskPayload | null | undefined): str
     return null;
   };
 
-  const directCandidate = extractCandidate(task);
+  const acceptCandidate = (
+    candidate: string | null,
+    normalizedKey?: string,
+    normalizedPath: string[] = [],
+  ): string | null => {
+    if (!candidate) {
+      return null;
+    }
+
+    const trimmed = candidate.trim();
+
+    if (!trimmed) {
+      return null;
+    }
+
+    if (trimmed.includes('://')) {
+      return null;
+    }
+
+    if (/\s/.test(trimmed)) {
+      return null;
+    }
+
+    if (!/^[0-9a-z-]+$/i.test(trimmed)) {
+      return null;
+    }
+
+    if (trimmed.length < 6) {
+      return null;
+    }
+
+    const hasDigit = /[0-9]/.test(trimmed);
+
+    if (!hasDigit) {
+      const strongContext = normalizedKey
+        ? shouldUseKeyForTaskId(normalizedKey, normalizedPath)
+        : pathHasTaskHint(normalizedPath);
+
+      if (!strongContext) {
+        return null;
+      }
+
+      if (trimmed.length < 8) {
+        return null;
+      }
+    }
+
+    return trimmed;
+  };
+
+  const directCandidate = acceptCandidate(extractCandidate(task), undefined, []);
   if (directCandidate) {
     return directCandidate;
   }
 
   const visited = new Set<object>();
-  const queue: unknown[] = [];
+  const queue: Array<{ value: unknown; path: string[] }> = [];
 
   if (task && typeof task === 'object') {
-    queue.push(task);
+    queue.push({ value: task, path: [] });
   }
 
   while (queue.length > 0) {
     const current = queue.shift();
 
-    if (!current || typeof current !== 'object') {
+    if (!current) {
       continue;
     }
 
-    if (visited.has(current as object)) {
+    const { value, path } = current;
+
+    if (!value || typeof value !== 'object') {
       continue;
     }
 
-    visited.add(current as object);
+    if (visited.has(value as object)) {
+      continue;
+    }
 
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        const candidate = extractCandidate(item);
-        if (candidate) {
+    visited.add(value as object);
+
+    const normalizedPath = path.map(normalizeKeySegment).filter(Boolean);
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const candidate = acceptCandidate(extractCandidate(item), undefined, normalizedPath);
+        if (candidate && pathHasTaskHint(normalizedPath)) {
           return candidate;
         }
 
         if (item && typeof item === 'object' && !visited.has(item as object)) {
-          queue.push(item);
+          queue.push({ value: item, path });
         }
       }
+
       continue;
     }
 
-    const record = current as Record<string, unknown>;
+    const record = value as Record<string, unknown>;
 
-    for (const key of TASK_IDENTIFIER_KEYS) {
-      const candidate = extractCandidate(record[key]);
-      if (candidate) {
+    for (const [rawKey, rawValue] of Object.entries(record)) {
+      const normalizedKey = normalizeKeySegment(rawKey);
+      const candidate = acceptCandidate(extractCandidate(rawValue), normalizedKey, normalizedPath);
+
+      if (candidate && shouldUseKeyForTaskId(normalizedKey, normalizedPath)) {
         return candidate;
       }
-    }
 
-    for (const value of Object.values(record)) {
-      if (value && typeof value === 'object' && !visited.has(value as object)) {
-        queue.push(value);
+      if (rawValue && typeof rawValue === 'object' && !visited.has(rawValue as object)) {
+        queue.push({ value: rawValue, path: [...path, rawKey] });
       }
     }
   }

@@ -169,6 +169,44 @@ describe("MineruClient analyzeDocument", () => {
     ]);
   });
 
+  it("handles task identifiers provided with alternate casing", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: '', structureSummary: null } });
+    const taskId = "ABCDEF1234567890";
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async () => mineruOk({ TaskID: taskId, state: "pending" }),
+      async () => mineruOk({ task_id: taskId, state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, { status: 200, headers: { "Content-Type": "application/zip" } }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument({ signedUrl: "https://signed.example.com/document.pdf" });
+
+    expect(calls[1]?.url).toContain(taskId);
+    expect(analysis.pages).toEqual([]);
+    expect(analysis.text).toBe("");
+  });
+
+  it("extracts task identifiers from task_ids arrays", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: '', structureSummary: null } });
+    const taskId = "task-abc-123";
+    const fullZipUrl = "https://cdn.example.com/archive.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async () => mineruOk({ task_ids: [taskId], state: "queued" }),
+      async () => mineruOk({ task_id: taskId, state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, { status: 200, headers: { "Content-Type": "application/zip" } }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    await client.analyzeDocument({ signedUrl: "https://signed.example.com/document.pdf" });
+
+    expect(calls[1]?.url).toContain(taskId);
+  });
+
   it("returns analysis when MinerU immediately provides an archive", async () => {
     const { archivePayload, zipLoader } = createArchiveSimulator({
       data: {
@@ -191,11 +229,6 @@ describe("MineruClient analyzeDocument", () => {
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
-      zipLoader,
-    });
-
-    const analysis = await client.analyzeDocument({
-      signedUrl: "https://signed.example.com/document.pdf",
     });
 
     expect(analysis.text).toBe("Immediate success");
@@ -299,12 +332,13 @@ describe("MineruClient analyzeDocument", () => {
     const client = new MineruClient({
       apiKey: "test-key",
       fetchImpl: fetchStub,
-      zipLoader,
     });
 
-    const analysis = await client.analyzeDocument({
-      signedUrl: "https://signed.example.com/document.pdf",
-    });
+    await expect(
+      client.analyzeDocument({
+        signedUrl: "https://signed.example.com/document.pdf",
+      }),
+    ).rejects.toMatchObject({ code: "MINERU_TIMEOUT" });
 
     expect(analysis.text).toBe("Recovered");
     expect(calls.map((call) => call.url)).toEqual([
@@ -342,6 +376,7 @@ describe("MineruClient analyzeDocument", () => {
 
     expect(calls).toHaveLength(3);
   });
+});
 
   it("throws MINERU_NO_RESULT_URL when the completed task lacks an archive URL", async () => {
     const { fetchStub } = createFetchSequence([
