@@ -64,24 +64,52 @@ function createFetchSequence(
   return { fetchStub, calls };
 }
 
-function createArchiveSimulator(payload: unknown) {
-  const jsonText = typeof payload === "string" ? payload : JSON.stringify(payload);
-  const archivePayload = new TextEncoder().encode(jsonText);
+type ArchiveEntry = {
+  name: string;
+  content: unknown;
+};
+
+type ArchiveSimulatorOptions = {
+  additionalEntries?: ArchiveEntry[];
+  primaryName?: string;
+  primaryPosition?: "first" | "last";
+};
+
+function createArchiveSimulator(payload: unknown, options: ArchiveSimulatorOptions = {}) {
+  const {
+    additionalEntries = [],
+    primaryName = "analysis.json",
+    primaryPosition = "first",
+  } = options;
+
+  const primaryEntry: ArchiveEntry = { name: primaryName, content: payload };
+
+  const entries = primaryPosition === "first"
+    ? [primaryEntry, ...additionalEntries]
+    : [...additionalEntries, primaryEntry];
+
+  const archivePayload = new TextEncoder().encode("mock-archive");
 
   const zipLoader = async () => ({
     loadAsync: async () => ({
-      files: {
-        "analysis.json": {
-          name: "analysis.json",
-          dir: false,
-          async: async (type: "string") => {
-            if (type !== "string") {
-              throw new Error(`Unsupported output type: ${type}`);
-            }
-            return jsonText;
+      files: Object.fromEntries(entries.map(({ name, content }) => {
+        const jsonText = typeof content === "string" ? content : JSON.stringify(content);
+
+        return [
+          name,
+          {
+            name,
+            dir: false,
+            async: async (type: "string") => {
+              if (type !== "string") {
+                throw new Error(`Unsupported output type: ${type}`);
+              }
+
+              return jsonText;
+            },
           },
-        },
-      },
+        ];
+      })),
     }),
   });
 
@@ -184,6 +212,40 @@ describe("MineruClient analyzeDocument", () => {
       "https://mineru.net/api/v4/extract/task",
       "https://mineru.net/api/v4/extract/task/task-123",
       "https://mineru.net/api/v4/extract/task/task-123",
+      fullZipUrl,
+    ]);
+  });
+
+  it("handles extract_result arrays returned directly by MinerU", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({
+      data: { pages: [{ pageNumber: 1, text: "Array payload" }], text: "Array payload" },
+    });
+
+    const fullZipUrl = "https://cdn.example.com/array-result.zip";
+
+    const { fetchStub, calls } = createFetchSequence([
+      async () => mineruOk({
+        extract_result: [
+          {
+            state: "done",
+            full_zip_url: fullZipUrl,
+            err_msg: "",
+          },
+        ],
+      }),
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument(defaultOptions);
+
+    expect(analysis.text).toContain("Array payload");
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://mineru.net/api/v4/extract/task",
       fullZipUrl,
     ]);
   });
@@ -358,6 +420,44 @@ describe("MineruClient analyzeDocument", () => {
     const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
 
     await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_ARCHIVE_ERROR" });
+  });
+
+  it("skips metadata JSON files when parsing the archive", async () => {
+    const realPayload = {
+      document: {
+        pages: [
+          { pageNumber: 1, text: "Actual page", blocks: [{ type: "paragraph", text: "Actual page" }] },
+        ],
+        text: "Actual page",
+      },
+      text: "Actual page",
+    };
+
+    const { archivePayload, zipLoader } = createArchiveSimulator(realPayload, {
+      additionalEntries: [
+        { name: "metadata.json", content: { generated_at: "2025-10-28T00:00:00Z" } },
+        { name: "logs.json", content: { entries: [] } },
+      ],
+      primaryPosition: "last",
+    });
+
+    const fullZipUrl = "https://cdn.example.com/archive-with-metadata.zip";
+
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk({ task_id: "task-archive", state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument(defaultOptions);
+
+    expect(analysis.pages).toHaveLength(1);
+    expect(analysis.pages[0]?.text).toBe("Actual page");
+    expect(analysis.text).toBe("Actual page");
   });
 
   it("normalizes alternate MinerU payload shapes", async () => {
