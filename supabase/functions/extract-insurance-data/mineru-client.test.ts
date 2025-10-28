@@ -251,7 +251,7 @@ describe("MineruClient analyzeDocument", () => {
   });
 
   it("accepts task identifiers with underscores", async () => {
-    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: "", structureSummary: null } });
+    const { archivePayload, zipLoader } = createArchiveSimulator({ data: { pages: [], text: "Task payload", structureSummary: null } });
     const taskId = "task_2025_0001";
     const fullZipUrl = "https://cdn.example.com/archive.zip";
 
@@ -299,6 +299,80 @@ describe("MineruClient analyzeDocument", () => {
       "https://mineru.net/api/v4/extract/task",
       fullZipUrl,
     ]);
+  });
+
+  it("parses JSONL archives and produces page text", async () => {
+    const jsonlPayload = [
+      JSON.stringify({ pageNumber: 1, text: "Line one" }),
+      JSON.stringify({ pageNumber: 2, text: "Line two" }),
+    ].join("\n");
+    const { archivePayload, zipLoader } = createArchiveSimulator(jsonlPayload, {
+      primaryName: "analysis.jsonl",
+    });
+
+    const fullZipUrl = "https://cdn.example.com/jsonl.zip";
+
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk({ state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument(defaultOptions);
+
+    expect(analysis.pages).toHaveLength(2);
+    expect(analysis.text).toContain("Line one");
+    expect(analysis.text).toContain("Line two");
+  });
+
+  it("falls back to markdown text when structured data is empty", async () => {
+    const fallbackContent = "# Summary\n\nDetected fallback text";
+    const { archivePayload, zipLoader } = createArchiveSimulator(
+      { data: {} },
+      {
+        additionalEntries: [
+          { name: "document.md", content: fallbackContent },
+        ],
+      },
+    );
+
+    const fullZipUrl = "https://cdn.example.com/fallback.zip";
+
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk({ state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    const analysis = await client.analyzeDocument(defaultOptions);
+
+    expect(analysis.text).toContain("Detected fallback text");
+  });
+
+  it("throws MINERU_EMPTY_ANALYSIS when the archive lacks usable content", async () => {
+    const { archivePayload, zipLoader } = createArchiveSimulator({ data: {} });
+
+    const fullZipUrl = "https://cdn.example.com/empty.zip";
+
+    const { fetchStub } = createFetchSequence([
+      async () => mineruOk({ state: "done", full_zip_url: fullZipUrl }),
+      async () => new Response(archivePayload, {
+        status: 200,
+        headers: { "Content-Type": "application/zip" },
+      }),
+    ]);
+
+    const client = new MineruClient({ apiKey: "test-key", fetchImpl: fetchStub, zipLoader });
+
+    await expect(client.analyzeDocument(defaultOptions)).rejects.toMatchObject({ code: "MINERU_EMPTY_ANALYSIS" });
   });
 
   it("throws MINERU_NO_TASK_ID when the initial response lacks an identifier and archive", async () => {

@@ -4,6 +4,7 @@ import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
 import {
   convertMineruPagesToSections,
   MineruClient,
+  MineruClientError,
   MineruHttpError,
   MineruPage,
   MineruStructuralSummary
@@ -498,22 +499,32 @@ serve(async (req) => {
         confidence: mineruStructureSummary?.confidence
       });
     } catch (mineruError) {
-      if (mineruError instanceof MineruHttpError) {
+      if (mineruError instanceof MineruClientError) {
+        const context = mineruError.context ?? {};
+        const status = mineruError instanceof MineruHttpError
+          ? mineruError.status
+          : context.status;
+        const endpoint = mineruError instanceof MineruHttpError
+          ? mineruError.endpoint
+          : context.endpoint;
+        const hint = mineruError instanceof MineruHttpError
+          ? mineruError.hint
+          : context.hint;
+
         console.error('❌ MinerU extraction failed', {
-          status: mineruError.status,
-          endpoint: mineruError.endpoint,
-          hint: mineruError.hint,
+          message: mineruError.message,
+          code: mineruError.code,
+          status,
+          endpoint,
+          requestId: context.requestId,
+          hint,
         });
         throw mineruError;
       }
 
       const message = mineruError instanceof Error ? mineruError.message : String(mineruError);
-      console.error('❌ MinerU extraction failed', message);
+      console.error('❌ MinerU extraction failed', { message });
       throw new Error(`MinerU extraction failed: ${message}`);
-    }
-
-    if (mineruPages.length === 0 || mineruText.trim().length === 0) {
-      throw new Error('MinerU returned empty document analysis');
     }
 
     const { sections, sources: segmentationSources } = convertMineruPagesToSections(mineruPages);
@@ -997,15 +1008,19 @@ serve(async (req) => {
     );
 
   } catch (error) {
+    const mineruClientError = error instanceof MineruClientError ? error : undefined;
     const mineruHttpError = error instanceof MineruHttpError ? error : undefined;
+    const context = mineruClientError?.context ?? {};
     const rawMessage = error instanceof Error ? error.message : 'Unknown error';
-    const errorMessage = mineruHttpError?.hint ?? rawMessage;
+    const errorMessage = context.hint ?? mineruHttpError?.hint ?? rawMessage;
 
     console.error('Error in extract-insurance-data:', {
       message: rawMessage,
       document_id,
-      status: mineruHttpError?.status,
-      hint: mineruHttpError?.hint,
+      code: mineruClientError?.code,
+      status: context.status ?? mineruHttpError?.status,
+      hint: context.hint ?? mineruHttpError?.hint,
+      requestId: context.requestId,
     });
 
     // Update document status to 'failed'
@@ -1038,13 +1053,17 @@ serve(async (req) => {
       }
     }
 
-    const statusCode = mineruHttpError?.status ?? 500;
-    const responsePayload = mineruHttpError
-      ? {
-          error: 'MinerU extraction failed',
-          status: mineruHttpError.status,
-          hint: mineruHttpError.hint,
-        }
+    const statusCode = context.status ?? mineruHttpError?.status ?? 500;
+    const responsePayload = mineruClientError
+      ? Object.fromEntries(
+          Object.entries({
+            error: 'MinerU extraction failed',
+            status: context.status ?? mineruHttpError?.status,
+            hint: context.hint ?? mineruHttpError?.hint,
+            code: mineruClientError.code,
+            requestId: context.requestId,
+          }).filter(([, value]) => value !== undefined),
+        )
       : { error: errorMessage };
 
     return new Response(

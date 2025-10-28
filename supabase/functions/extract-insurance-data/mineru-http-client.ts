@@ -182,7 +182,7 @@ export class MineruHttpClient {
           method: options.method ?? 'GET',
           status: response.status,
           durationMs,
-          bodyPreview,
+          bodyPreview: this.shouldLogBodyPreview(response.status) ? bodyPreview : undefined,
         });
 
         return {
@@ -328,6 +328,10 @@ export class MineruHttpClient {
     };
 
     console.debug('MinerU HTTP', payload);
+  }
+
+  private shouldLogBodyPreview(status: number): boolean {
+    return status >= 400 || status === 0;
   }
 
 }

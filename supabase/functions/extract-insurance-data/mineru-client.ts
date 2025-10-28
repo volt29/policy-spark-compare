@@ -10,6 +10,8 @@ import { MineruHttpClient, MineruHttpResponse } from './mineru-http-client.ts';
 const DEFAULT_POLL_INTERVAL_MS = 2500;
 const MIN_POLL_INTERVAL_MS = 250;
 const DEFAULT_POLL_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_CREATE_TASK_TIMEOUT_MS = 45_000;
+const MAX_CREATE_TASK_TIMEOUT_MS = 2 * 60 * 1000;
 
 export interface MineruBoundingBox {
   x: number;
@@ -67,6 +69,12 @@ export interface MineruSegmentationResult {
   sections: ParsedSection[];
   sources: SectionSource[];
 }
+
+type ZipEntry = {
+  name: string;
+  dir: boolean;
+  async(type: 'string'): Promise<string>;
+};
 
 type MineruExtractTaskStatus =
   | 'pending'
@@ -736,6 +744,11 @@ export class MineruClient {
     const operationId = createOperationId();
     const operationStart = Date.now();
     const effectiveOrganizationId = organizationId?.trim() || this.organizationId;
+    const pollTimeoutMs = timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
+    const createTimeoutMs = Math.max(
+      DEFAULT_CREATE_TASK_TIMEOUT_MS,
+      Math.min(pollTimeoutMs, MAX_CREATE_TASK_TIMEOUT_MS),
+    );
     const logContext = {
       operationId,
       documentId: documentId ?? undefined,
@@ -768,6 +781,7 @@ export class MineruClient {
           method: 'POST',
           body: JSON.stringify(bodyPayload),
           organizationId: effectiveOrganizationId,
+          timeoutMs: createTimeoutMs,
         },
       );
 
@@ -801,6 +815,7 @@ export class MineruClient {
             taskId: currentTaskId,
             durationMs,
             pages: analysis.pages.length,
+            textLength: analysis.text.length,
           });
           return analysis;
         }
@@ -839,7 +854,7 @@ export class MineruClient {
       try {
         pollResult = await this.pollExtractTask(initialTaskId, {
           pollIntervalMs,
-          timeoutMs,
+          timeoutMs: pollTimeoutMs,
           organizationId: effectiveOrganizationId,
         });
         lastRequestId = pollResult.response.requestId;
@@ -884,6 +899,7 @@ export class MineruClient {
         taskId: currentTaskId,
         durationMs,
         pages: analysis.pages.length,
+        textLength: analysis.text.length,
       });
 
       return analysis;
@@ -969,8 +985,9 @@ export class MineruClient {
       const JSZip = await this.loadZipModule();
       const archive = await JSZip.loadAsync(archiveResponse.data);
       const files = archive?.files ?? {};
-      const jsonEntries = Object.values(files)
-        .filter((file) => !file.dir && file.name.toLowerCase().endsWith('.json'))
+      const entries = Object.values(files).filter((file): file is ZipEntry => !file.dir);
+      const jsonEntries = entries
+        .filter((file) => isJsonLikeEntry(file.name))
         .sort((a, b) => scoreArchiveEntry(b.name) - scoreArchiveEntry(a.name));
 
       if (jsonEntries.length === 0) {
@@ -989,16 +1006,17 @@ export class MineruClient {
 
       for (const entry of jsonEntries) {
         try {
-          const jsonText = await entry.async('string');
-          const parsed = JSON.parse(jsonText);
+          const rawText = await entry.async('string');
+          const parsed = parseJsonLikeContent(entry.name, rawText);
           const analysis = normalizeMineruAnalysis(parsed);
+          const enriched = await enrichAnalysisWithFallbackText(analysis, entries);
 
-          if (hasUsableAnalysis(analysis)) {
-            return { analysis, requestId: archiveResponse.requestId };
+          if (hasUsableAnalysis(enriched)) {
+            return { analysis: enriched, requestId: archiveResponse.requestId };
           }
 
           if (!fallbackAnalysis) {
-            fallbackAnalysis = analysis;
+            fallbackAnalysis = enriched;
           }
         } catch (parseError) {
           lastParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
@@ -1006,7 +1024,10 @@ export class MineruClient {
       }
 
       if (fallbackAnalysis) {
-        return { analysis: fallbackAnalysis, requestId: archiveResponse.requestId };
+        const enriched = await enrichAnalysisWithFallbackText(fallbackAnalysis, entries);
+        if (hasUsableAnalysis(enriched)) {
+          return { analysis: enriched, requestId: archiveResponse.requestId };
+        }
       }
 
       const errorContext = {
@@ -1016,8 +1037,8 @@ export class MineruClient {
       } satisfies Record<string, unknown>;
 
       throw new MineruClientError({
-        message: 'Mineru archive did not contain usable analysis JSON',
-        code: 'MINERU_ARCHIVE_ERROR',
+        message: 'Mineru archive did not contain usable analysis data',
+        code: 'MINERU_EMPTY_ANALYSIS',
         context: errorContext,
         cause: lastParseError,
       });
@@ -1079,7 +1100,100 @@ function scoreArchiveEntry(name: string): number {
   }
 
   if (normalized.endsWith('jsonl')) {
-    score -= 5;
+    score += 12;
+  }
+
+  return score;
+}
+
+function isJsonLikeEntry(name: string): boolean {
+  return /\.jsonl?$/i.test(name);
+}
+
+function parseJsonLikeContent(entryName: string, rawText: string): unknown {
+  const normalizedName = entryName.toLowerCase();
+
+  if (normalizedName.endsWith('.jsonl')) {
+    const lines = rawText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const parsedLines = lines.map((line) => JSON.parse(line));
+
+    const container: Record<string, unknown> = { items: parsedLines };
+
+    if (parsedLines.every((value) => value && typeof value === 'object')) {
+      container.pages = parsedLines;
+    }
+
+    return container;
+  }
+
+  return JSON.parse(rawText);
+}
+
+async function enrichAnalysisWithFallbackText(
+  analysis: MineruAnalyzeDocumentResult,
+  entries: ZipEntry[],
+): Promise<MineruAnalyzeDocumentResult> {
+  if (hasUsableAnalysis(analysis)) {
+    return analysis;
+  }
+
+  const fallbackText = await extractFallbackText(entries);
+  if (fallbackText) {
+    return { ...analysis, text: fallbackText };
+  }
+
+  return analysis;
+}
+
+async function extractFallbackText(entries: ZipEntry[]): Promise<string | null> {
+  const textEntries = entries
+    .filter((entry) => /\.(txt|md|markdown)$/i.test(entry.name))
+    .sort((a, b) => scoreTextEntry(b.name) - scoreTextEntry(a.name));
+
+  for (const entry of textEntries) {
+    try {
+      const text = (await entry.async('string')).trim();
+      if (text.length > 0) {
+        return text;
+      }
+    } catch {
+      // Ignore errors when reading fallback text entries.
+    }
+  }
+
+  return null;
+}
+
+function scoreTextEntry(name: string): number {
+  const normalized = name.toLowerCase();
+  let score = 0;
+
+  if (normalized.includes('text')) {
+    score += 15;
+  }
+
+  if (normalized.includes('full')) {
+    score += 10;
+  }
+
+  if (normalized.includes('markdown') || normalized.endsWith('.md') || normalized.endsWith('.markdown')) {
+    score += 8;
+  }
+
+  if (normalized.includes('ocr')) {
+    score += 5;
+  }
+
+  if (normalized.includes('raw')) {
+    score -= 2;
+  }
+
+  if (normalized.includes('clean')) {
+    score += 4;
   }
 
   return score;

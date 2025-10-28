@@ -6,7 +6,8 @@ export type MineruErrorCode =
   | 'MINERU_NO_TASK_ID'
   | 'MINERU_NO_RESULT_URL'
   | 'MINERU_TASK_FAILED'
-  | 'MINERU_ARCHIVE_ERROR';
+  | 'MINERU_ARCHIVE_ERROR'
+  | 'MINERU_EMPTY_ANALYSIS';
 
 export interface MineruErrorContext {
   endpoint?: string;
