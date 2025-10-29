@@ -1937,7 +1937,7 @@ function normalizeStructuralSummary(raw: any): MineruStructuralSummary | null {
         keywords,
       } satisfies MineruStructuralSummaryPage;
     })
-    .filter((page): page is MineruStructuralSummaryPage => !!page);
+    .filter((page) => page !== null && page !== undefined);
 
   return {
     confidence: typeof raw.confidence === 'number' ? raw.confidence : undefined,

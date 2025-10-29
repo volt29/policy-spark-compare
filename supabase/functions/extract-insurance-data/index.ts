@@ -8,6 +8,7 @@ import {
   MineruHttpError,
   MineruPage,
   MineruStructuralSummary,
+  MineruStructuralSummaryPage,
   sanitizePlainText
 } from './mineru-client.ts';
 import {
@@ -59,13 +60,22 @@ const requestSchema = z.object({
 });
 
 const LOVABLE_SYSTEM_PROMPT = `Jesteś ekspertem od ekstrakcji danych z ofert ubezpieczeniowych.
-Ekstrahuj informacje zgodnie z zunifikowanym schematem:
-- Priorytetowo używaj danych z tekstu dokumentu
-- Dla składek: szukaj "total_premium_before_discounts" i "total_premium_after_discounts"
-- Dla ubezpieczonych: szukaj imion, wieku i przypisanych planów
-- Dla assistance: wypisz pełne nazwy usług z limity
-- Dla zniżek: wymień wszystkie rabaty i promocje
-- Oznacz brakujące wartości jako null lub pomiń pole`;
+
+KRYTYCZNE ZASADY:
+1. Ekstrahuj WSZYSTKIE dane numeryczne jako liczby, nie ciągi znaków
+2. Dla każdego ubezpieczonego wyodrębnij: imię, nazwisko, wiek (jako liczba)
+3. Dla składek szukaj wyrażeń: "składka", "łączna składka", "do zapłaty", "suma składek"
+4. ZAWSZE wypełniaj total_premium_before_discounts i total_premium_after_discounts
+5. Jeśli nie ma zniżek, obie składki powinny być takie same
+6. Wiek podawaj jako NUMBER, nie jako string
+7. Kwoty podawaj jako NUMBER (np. 123.45, nie "123,45 PLN")
+
+Format danych:
+- age: NUMBER (np. 38, nie "38")
+- premium: NUMBER (np. 156.78, nie "156,78 zł")
+- sum: NUMBER (np. 50000, nie "50 000 PLN")
+
+Oznacz brakujące wartości jako null (nie jako "missing" ani undefined).`;
 
 interface AiRetryDecision {
   shouldRetry: boolean;
@@ -533,10 +543,14 @@ serve(async (req) => {
         });
       }
 
-      console.log('✅ MinerU: task completed', {
+      console.log('✅ MinerU extraction complete:', {
         pages: mineruPages.length,
-        characters: mineruText.length,
-        confidence: mineruStructureSummary?.confidence
+        totalTextLength: mineruText.length,
+        structureSummary: mineruStructureSummary ? {
+          confidence: mineruStructureSummary.confidence,
+          pageCount: mineruStructureSummary.pages.length
+        } : null,
+        sampleText: mineruText.substring(0, 200)
       });
     } catch (mineruError) {
       if (mineruError instanceof MineruClientError) {
@@ -573,6 +587,29 @@ serve(async (req) => {
     );
     const segmentationProductHeuristic = inferProductTypeFromText(mineruText, 'segmentation');
     const textConfidence = calculateExtractionConfidence(sections);
+
+    console.log('✅ Segmentation result:', {
+      totalSections: sections.length,
+      sectionTypes: sections.reduce((acc, s) => {
+        acc[s.type] = (acc[s.type] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>),
+      sourcesCount: segmentationSources.length,
+      textConfidence
+    });
+
+    // Fallback if no sections identified
+    if (sections.length === 0 && mineruText.length > 0) {
+      console.warn('⚠️ No sections identified, creating fallback section');
+      sections.push({
+        type: 'unknown',
+        content: mineruText,
+        keywords: [],
+        confidence: 0.3,
+        pageRange: { start: 1, end: mineruPages.length },
+        snippet: mineruText.substring(0, 280)
+      });
+    }
 
     // Define JSON Schema for structured extraction (updated for unified structure)
     const extractionSchema = {
@@ -827,7 +864,13 @@ serve(async (req) => {
         .join(', ') || 'brak sekcji';
 
       const structuralSummary = mineruStructureSummary?.pages
-        ?.filter(page => page.pageNumber >= segmentPageStart && page.pageNumber <= segmentPageEnd)
+        ?.filter((page): page is MineruStructuralSummaryPage => 
+          page !== null && 
+          page !== undefined && 
+          typeof page.pageNumber === 'number' &&
+          page.pageNumber >= segmentPageStart && 
+          page.pageNumber <= segmentPageEnd
+        )
         ?.map(page => {
           const headings = page.headings?.slice(0, 5).join(', ') || 'brak nagłówków';
           return `Strona ${page.pageNumber}: ${page.blockCount} bloków, nagłówki: ${headings}`;
@@ -876,6 +919,14 @@ serve(async (req) => {
       );
 
       const parsedSegmentData = parseAiExtractionResponse(aiSegmentData);
+      
+      console.log(`✅ Segment ${segmentIndex + 1} AI extraction:`, {
+        hasInsurer: !!parsedSegmentData?.insurer,
+        hasInsured: Array.isArray(parsedSegmentData?.insured) && parsedSegmentData.insured.length > 0,
+        hasPremium: !!parsedSegmentData?.total_premium_after_discounts,
+        keys: Object.keys(parsedSegmentData || {})
+      });
+      
       extractedData = mergeExtractedData(extractedData, parsedSegmentData);
     }
 
@@ -964,10 +1015,12 @@ serve(async (req) => {
         ? {
             provider: 'mineru',
             confidence: mineruStructureSummary.confidence,
-            block_counts: mineruStructureSummary.blockCounts,
-            tables: mineruStructureSummary.tables,
-            key_value_pairs: mineruStructureSummary.keyValuePairs,
-            pages: mineruStructureSummary.pages
+            pages: mineruStructureSummary.pages.map(page => ({
+              pageNumber: page.pageNumber,
+              blockCount: page.blockCount,
+              headings: page.headings ?? [],
+              keywords: page.keywords ?? []
+            }))
           }
         : null;
 
