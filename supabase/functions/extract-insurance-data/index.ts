@@ -16,6 +16,7 @@ import {
   inferProductTypeFromText
 } from './classifier.ts';
 import { buildUnifiedOffer, UnifiedOfferBuildResult } from './unified-builder.ts';
+import { ensureRowsUpdated } from './update-utils.ts';
 
 type LovableContentBlock = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
@@ -449,10 +450,22 @@ serve(async (req) => {
     }
 
     // Update status to processing
-    await supabase
+    const {
+      data: processingUpdateData,
+      error: processingUpdateError,
+    } = await supabase
       .from('documents')
       .update({ status: 'processing' })
-      .eq('id', document_id);
+      .eq('id', document_id)
+      .select('id');
+
+    if (processingUpdateError) {
+      throw new Error(
+        `Failed to update document status to processing: ${processingUpdateError.message}`,
+      );
+    }
+
+    ensureRowsUpdated(processingUpdateData, document_id, 'processing');
 
     console.log('✅ Step 9: Status updated to processing');
 
@@ -994,19 +1007,24 @@ serve(async (req) => {
       console.log('✅ Step 22: Updating document with extracted data...');
 
     // Update document with extracted data
-    const { error: updateError } = await supabase
+    const { data: updateData, error: updateError } = await supabase
       .from('documents')
       .update({
         extracted_data: finalData,
         status: 'completed'
       })
-      .eq('id', document_id);
+      .eq('id', document_id)
+      .select('id');
 
     if (updateError) {
       throw new Error(`Failed to update document: ${updateError.message}`);
     }
 
+    ensureRowsUpdated(updateData, document_id, 'completed');
+
     documentMarkedAsCompleted = true;
+
+    console.log('phase=callback_done', { document_id });
 
     console.log('✅ Step 23: Document processed successfully:', document_id);
 
