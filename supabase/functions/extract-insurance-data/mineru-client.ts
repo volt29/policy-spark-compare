@@ -1176,9 +1176,10 @@ async function extractFallbackText(entries: ZipEntry[]): Promise<string | null> 
 
   for (const entry of textEntries) {
     try {
-      const text = (await entry.async('string')).trim();
-      if (text.length > 0) {
-        return text;
+      const text = await entry.async('string');
+      const plain = extractPlainText(text);
+      if (plain) {
+        return plain;
       }
     } catch {
       // Ignore errors when reading fallback text entries.
@@ -1186,6 +1187,117 @@ async function extractFallbackText(entries: ZipEntry[]): Promise<string | null> 
   }
 
   return null;
+}
+
+export function sanitizePlainText(value: string): string {
+  return extractPlainText(value) ?? value.trim();
+}
+
+function extractPlainText(source: unknown): string | null {
+  if (typeof source === 'string') {
+    const trimmed = source.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (looksLikeJson(trimmed)) {
+      const fromJson = extractPlainTextFromJson(trimmed);
+      if (fromJson) {
+        return fromJson;
+      }
+    }
+
+    return trimmed;
+  }
+
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+
+  return extractPlainTextFromStructure(source, new Set());
+}
+
+function looksLikeJson(value: string): boolean {
+  const firstChar = value[0];
+  const lastChar = value[value.length - 1];
+  return (
+    (firstChar === '{' && lastChar === '}')
+    || (firstChar === '[' && lastChar === ']')
+  );
+}
+
+function extractPlainTextFromJson(value: string): string | null {
+  try {
+    const parsed = JSON.parse(value);
+    return extractPlainTextFromStructure(parsed, new Set());
+  } catch {
+    return null;
+  }
+}
+
+function extractPlainTextFromStructure(value: unknown, seen: Set<object>): string | null {
+  if (typeof value === 'string') {
+    return extractPlainText(value);
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const objectValue = value as Record<string, unknown> | unknown[];
+  const container = Array.isArray(objectValue)
+    ? objectValue
+    : Object.values(objectValue as Record<string, unknown>);
+
+  if (seen.has(value as object)) {
+    return null;
+  }
+
+  seen.add(value as object);
+
+  const prioritizedKeys = Array.isArray(objectValue)
+    ? []
+    : [
+      'text',
+      'full_text',
+      'fullText',
+      'text_content',
+      'content',
+      'value',
+      'raw',
+    ];
+
+  const fragments: string[] = [];
+
+  if (!Array.isArray(objectValue)) {
+    for (const key of prioritizedKeys) {
+      if (!(key in objectValue)) {
+        continue;
+      }
+
+      const fragment = extractPlainTextFromStructure(objectValue[key], seen);
+      if (fragment) {
+        fragments.push(fragment);
+      }
+    }
+  }
+
+  for (const entry of container) {
+    const fragment = extractPlainTextFromStructure(entry, seen);
+    if (fragment) {
+      fragments.push(fragment);
+    }
+  }
+
+  const uniqueFragments = Array.from(new Set(
+    fragments
+      .map((fragment) => fragment.trim())
+      .filter((fragment) => fragment.length > 0),
+  ));
+
+  const joined = uniqueFragments.join('\n').trim();
+
+  return joined.length > 0 ? joined : null;
 }
 
 function scoreTextEntry(name: string): number {
@@ -1514,13 +1626,9 @@ function extractTextFromRoot(root: any, pages: MineruPage[]): string {
   const candidates: string[] = [];
 
   const addCandidate = (value: unknown) => {
-    if (typeof value !== 'string') {
-      return;
-    }
-
-    const trimmed = value.trim();
-    if (trimmed) {
-      candidates.push(trimmed);
+    const plain = extractPlainText(value);
+    if (plain) {
+      candidates.push(plain);
     }
   };
 
@@ -1567,7 +1675,7 @@ function extractTextFromRoot(root: any, pages: MineruPage[]): string {
   }
 
   if (pages.length > 0) {
-    const joined = pages.map((page) => page.text).filter(Boolean).join('\n\n');
+    const joined = pages.map((page) => extractPlainText(page.text)).filter(Boolean).join('\n\n');
     return joined.trim();
   }
 
@@ -1696,38 +1804,20 @@ function normalizeMineruPage(raw: any, index: number): MineruPage {
 }
 
 function extractPageText(raw: any, blocks?: MineruBlock[]): string {
-  const directText = typeof raw?.text === 'string' ? raw.text : undefined;
-  if (directText && directText.trim().length > 0) {
+  const directText = extractPlainText(raw?.text);
+  if (directText) {
     return directText;
   }
 
-  if (typeof raw?.content === 'string' && raw.content.trim().length > 0) {
-    return raw.content;
+  const directContent = extractPlainText(raw?.content);
+  if (directContent) {
+    return directContent;
   }
 
   if (Array.isArray(raw?.content)) {
     const parts = raw.content
-      .map((part: unknown) => {
-        if (typeof part === 'string') {
-          return part;
-        }
-
-        if (part && typeof part === 'object') {
-          const candidate =
-            typeof (part as { text?: unknown }).text === 'string'
-              ? (part as { text: string }).text
-              : typeof (part as { content?: unknown }).content === 'string'
-                ? (part as { content: string }).content
-                : undefined;
-
-          if (candidate && candidate.trim().length > 0) {
-            return candidate;
-          }
-        }
-
-        return undefined;
-      })
-      .filter((value: string | undefined): value is string => Boolean(value && value.trim().length > 0));
+      .map((part: unknown) => extractPlainText(part))
+      .filter((value: string | null): value is string => Boolean(value));
 
     if (parts.length > 0) {
       return parts.join('\n');
@@ -1736,8 +1826,8 @@ function extractPageText(raw: any, blocks?: MineruBlock[]): string {
 
   if (Array.isArray(raw?.lines)) {
     const lines = raw.lines
-      .map((line: unknown) => (typeof line === 'string' ? line : undefined))
-      .filter((value: string | undefined): value is string => Boolean(value && value.trim().length > 0));
+      .map((line: unknown) => extractPlainText(line))
+      .filter((value: string | null): value is string => Boolean(value));
 
     if (lines.length > 0) {
       return lines.join('\n');
@@ -1746,8 +1836,8 @@ function extractPageText(raw: any, blocks?: MineruBlock[]): string {
 
   if (blocks && blocks.length > 0) {
     const blockText = blocks
-      .map((block) => block.text?.trim())
-      .filter((value): value is string => Boolean(value && value.length > 0));
+      .map((block) => extractPlainText(block.text))
+      .filter((value: string | null): value is string => Boolean(value));
 
     if (blockText.length > 0) {
       return blockText.join('\n');
@@ -1758,6 +1848,8 @@ function extractPageText(raw: any, blocks?: MineruBlock[]): string {
 }
 
 function normalizeMineruBlock(raw: any): MineruBlock {
+  const blockText = extractPlainText(raw?.text) ?? extractPlainText(raw?.content);
+
   const block: MineruBlock = {
     id: typeof raw?.id === 'string' ? raw.id : undefined,
     type: typeof raw?.type === 'string'
@@ -1765,11 +1857,7 @@ function normalizeMineruBlock(raw: any): MineruBlock {
       : typeof raw?.block_type === 'string'
         ? raw.block_type
         : 'text',
-    text: typeof raw?.text === 'string'
-      ? raw.text
-      : typeof raw?.content === 'string'
-        ? raw.content
-        : undefined,
+    text: blockText ?? undefined,
     confidence: typeof raw?.confidence === 'number' ? raw.confidence : undefined,
     headingLevel: typeof raw?.headingLevel === 'number'
       ? raw.headingLevel
