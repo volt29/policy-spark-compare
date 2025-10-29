@@ -1,7 +1,118 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
 import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
-import { sanitizePlainText } from "../extract-insurance-data/mineru-client.ts";
+
+// Text sanitization utilities (copied from mineru-client to avoid cross-function imports)
+function sanitizePlainText(value: string): string {
+  return extractPlainText(value) ?? value.trim();
+}
+
+function extractPlainText(source: unknown): string | null {
+  if (typeof source === 'string') {
+    const trimmed = source.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (looksLikeJson(trimmed)) {
+      const fromJson = extractPlainTextFromJson(trimmed);
+      if (fromJson) {
+        return fromJson;
+      }
+    }
+
+    return trimmed;
+  }
+
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+
+  return extractPlainTextFromStructure(source, new Set());
+}
+
+function looksLikeJson(value: string): boolean {
+  const firstChar = value[0];
+  const lastChar = value[value.length - 1];
+  return (
+    (firstChar === '{' && lastChar === '}')
+    || (firstChar === '[' && lastChar === ']')
+  );
+}
+
+function extractPlainTextFromJson(value: string): string | null {
+  try {
+    const parsed = JSON.parse(value);
+    return extractPlainTextFromStructure(parsed, new Set());
+  } catch {
+    return null;
+  }
+}
+
+function extractPlainTextFromStructure(value: unknown, seen: Set<object>): string | null {
+  if (typeof value === 'string') {
+    return extractPlainText(value);
+  }
+
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const objectValue = value as Record<string, unknown> | unknown[];
+  const container = Array.isArray(objectValue)
+    ? objectValue
+    : Object.values(objectValue as Record<string, unknown>);
+
+  if (seen.has(value as object)) {
+    return null;
+  }
+
+  seen.add(value as object);
+
+  const prioritizedKeys = Array.isArray(objectValue)
+    ? []
+    : [
+      'text',
+      'full_text',
+      'fullText',
+      'text_content',
+      'content',
+      'value',
+      'raw',
+    ];
+
+  const fragments: string[] = [];
+
+  if (!Array.isArray(objectValue)) {
+    for (const key of prioritizedKeys) {
+      if (!(key in objectValue)) {
+        continue;
+      }
+
+      const fragment = extractPlainTextFromStructure(objectValue[key], seen);
+      if (fragment) {
+        fragments.push(fragment);
+      }
+    }
+  }
+
+  for (const entry of container) {
+    const fragment = extractPlainTextFromStructure(entry, seen);
+    if (fragment) {
+      fragments.push(fragment);
+    }
+  }
+
+  const uniqueFragments = Array.from(new Set(
+    fragments
+      .map((fragment) => fragment.trim())
+      .filter((fragment) => fragment.length > 0),
+  ));
+
+  const joined = uniqueFragments.join('\n').trim();
+
+  return joined.length > 0 ? joined : null;
+}
 
 const allowedOrigins = (Deno.env.get("CORS_ALLOWED_ORIGINS") || "")
   .split(",")
