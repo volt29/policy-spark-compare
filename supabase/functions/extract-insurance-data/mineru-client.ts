@@ -782,8 +782,13 @@ export class MineruClient {
     };
 
     bodyPayload.is_ocr = isOcrEnabled;
+    bodyPayload.ocr = isOcrEnabled;
+    bodyPayload.enable_ocr = isOcrEnabled;
+    bodyPayload.ocr_enabled = isOcrEnabled;
     bodyPayload.enable_table = isTableEnabled;
     bodyPayload.enable_formula = isFormulaEnabled;
+    bodyPayload.language = 'pl';
+    bodyPayload.ocr_lang = 'pl';
 
     if (documentId) {
       bodyPayload.document_id = documentId;
@@ -1157,15 +1162,29 @@ async function enrichAnalysisWithFallbackText(
   analysis: MineruAnalyzeDocumentResult,
   entries: ZipEntry[],
 ): Promise<MineruAnalyzeDocumentResult> {
-  if (hasUsableAnalysis(analysis)) {
+  const hasUsable = hasUsableAnalysis(analysis);
+  
+  console.log('📋 Fallback check:', {
+    hasUsable,
+    pagesCount: analysis.pages.length,
+    textLength: analysis.text.length,
+    availableTextFiles: entries.filter(e => /\.(txt|md|markdown)$/i.test(e.name)).map(e => e.name)
+  });
+  
+  if (hasUsable) {
     return analysis;
   }
 
   const fallbackText = await extractFallbackText(entries);
   if (fallbackText) {
+    console.log('✅ Using fallback text from archive', { 
+      fallbackTextLength: fallbackText.length,
+      snippet: fallbackText.substring(0, 200)
+    });
     return { ...analysis, text: fallbackText };
   }
 
+  console.warn('⚠️ No fallback text available in archive');
   return analysis;
 }
 
@@ -1332,15 +1351,23 @@ function scoreTextEntry(name: string): number {
 }
 
 function hasUsableAnalysis(analysis: MineruAnalyzeDocumentResult): boolean {
+  // Check if we have actual text content (not just structure)
+  if (typeof analysis.text === 'string' && analysis.text.trim().length > 50) {
+    return true;
+  }
+  
+  // Check if pages have actual text content
   if (analysis.pages.length > 0) {
-    return true;
+    const hasPageText = analysis.pages.some(page => 
+      typeof page.text === 'string' && page.text.trim().length > 50
+    );
+    if (hasPageText) {
+      return true;
+    }
   }
-
-  if (typeof analysis.text === 'string' && analysis.text.trim().length > 0) {
-    return true;
-  }
-
-  return Boolean(analysis.structureSummary);
+  
+  // Structure without text is not sufficient - we need fallback
+  return false;
 }
 
 function collectAnalysisRoots(payload: any): any[] {

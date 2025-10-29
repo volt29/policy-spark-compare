@@ -116,6 +116,11 @@ export type Database = {
           file_size: number | null
           id: string
           mime_type: string | null
+          ocr_extracted_at: string | null
+          ocr_fallback_used: boolean
+          ocr_provider: string | null
+          ocr_text: string | null
+          ocr_text_length: number | null
           status: string
           user_id: string
         }
@@ -128,6 +133,11 @@ export type Database = {
           file_size?: number | null
           id?: string
           mime_type?: string | null
+          ocr_extracted_at?: string | null
+          ocr_fallback_used?: boolean
+          ocr_provider?: string | null
+          ocr_text?: string | null
+          ocr_text_length?: number | null
           status?: string
           user_id: string
         }
@@ -140,6 +150,11 @@ export type Database = {
           file_size?: number | null
           id?: string
           mime_type?: string | null
+          ocr_extracted_at?: string | null
+          ocr_fallback_used?: boolean
+          ocr_provider?: string | null
+          ocr_text?: string | null
+          ocr_text_length?: number | null
           status?: string
           user_id?: string
         }

@@ -581,6 +581,95 @@ serve(async (req) => {
       throw new Error(`MinerU extraction failed: ${message}`);
     }
 
+    // Save raw OCR text to database
+    console.log('💾 Saving OCR text to database...');
+    const ocrTextLength = mineruText.length;
+    let ocrProvider = 'mineru';
+    let ocrFallbackUsed = false;
+    
+    // Check if we need ConvertAPI fallback for very short or empty text
+    if (ocrTextLength < 100 && mineruPages.length > 0) {
+      console.warn('⚠️ MinerU text too short, trying ConvertAPI fallback...', {
+        mineruTextLength: ocrTextLength,
+        pagesCount: mineruPages.length
+      });
+      
+      try {
+        const convertApiKey = Deno.env.get('CONVERTAPI_SECRET');
+        if (convertApiKey) {
+          const convertResponse = await fetch(
+            `https://v2.convertapi.com/convert/pdf/to/txt?Secret=${convertApiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                Parameters: [
+                  { Name: 'File', Value: signedUrl },
+                  { Name: 'OCR', Value: 'true' },
+                  { Name: 'OCRLanguages', Value: 'pol' }
+                ]
+              }),
+              signal: AbortSignal.timeout(60000)
+            }
+          );
+          
+          if (convertResponse.ok) {
+            const convertData = await convertResponse.json();
+            if (convertData.Files?.[0]?.Url) {
+              const txtFileUrl = convertData.Files[0].Url;
+              const txtResponse = await fetch(txtFileUrl);
+              const convertApiText = await txtResponse.text();
+              
+              if (convertApiText.length > mineruText.length) {
+                mineruText = sanitizePlainText(convertApiText);
+                ocrProvider = 'convertapi';
+                ocrFallbackUsed = true;
+                
+                console.log('✅ ConvertAPI fallback successful:', {
+                  convertApiTextLength: mineruText.length,
+                  improvement: mineruText.length - ocrTextLength
+                });
+              }
+            }
+          } else {
+            console.warn('⚠️ ConvertAPI returned error status:', convertResponse.status);
+          }
+        } else {
+          console.warn('⚠️ CONVERTAPI_SECRET not configured, skipping fallback');
+        }
+      } catch (convertError) {
+        console.error('❌ ConvertAPI fallback failed:', {
+          error: convertError instanceof Error ? convertError.message : String(convertError)
+        });
+      }
+    }
+
+    await supabase
+      .from('documents')
+      .update({
+        ocr_text: mineruText || null,
+        ocr_text_length: mineruText.length,
+        ocr_provider: ocrProvider,
+        ocr_fallback_used: ocrFallbackUsed,
+        ocr_extracted_at: new Date().toISOString()
+      })
+      .eq('id', document_id);
+
+    console.log('✅ OCR text saved to database:', {
+      length: mineruText.length,
+      provider: ocrProvider,
+      fallbackUsed: ocrFallbackUsed
+    });
+
+    if (mineruText.length < 300) {
+      console.warn('⚠️ OCR text unusually short', {
+        document_id,
+        length: mineruText.length,
+        pagesCount: mineruPages.length,
+        provider: ocrProvider
+      });
+    }
+
     const { sections, sources: segmentationSources } = convertMineruPagesToSections(
       mineruPages,
       mineruText,
@@ -1027,6 +1116,9 @@ serve(async (req) => {
       const diagnostics = {
         extraction_confidence: unifiedOffer.extraction_confidence,
         missing_fields: unifiedOffer.missing_fields,
+        ocr_provider: ocrProvider,
+        ocr_text_length: mineruText.length,
+        ocr_fallback_used: ocrFallbackUsed,
         sections: sections.map((section, index) => ({
           index,
           type: section.type,
@@ -1044,7 +1136,11 @@ serve(async (req) => {
         },
         sources: aggregatedSources,
         currency_normalization: currencyNormalization,
-        mineru: mineruDiagnostics
+        mineru: mineruDiagnostics,
+        warnings: [
+          ...(mineruText.length < 300 ? ['OCR text unusually short'] : []),
+          ...(mineruPages.length === 0 ? ['No pages extracted'] : [])
+        ]
       };
 
       // Merge unified structure with original extracted data for backward compatibility
