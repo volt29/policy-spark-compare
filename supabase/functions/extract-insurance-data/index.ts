@@ -1098,7 +1098,71 @@ serve(async (req) => {
         }));
       }
 
-      console.log('✅ Step 22: Updating document with extracted data...');
+      console.log('✅ Step 22: Validating extracted data quality...');
+
+      // Validate data quality before persisting
+      function validateExtractedData(data: any, unified: typeof unifiedOffer): string[] {
+        const errors: string[] = [];
+        
+        if (!data.insurer || data.insurer === 'null' || data.insurer === null) {
+          errors.push('Missing insurer name');
+        }
+        
+        if (unified.missing_fields.length > 5) {
+          errors.push(`Too many missing fields: ${unified.missing_fields.length}`);
+        }
+        
+        if (!unified.insured || unified.insured.length === 0 || 
+            unified.insured[0].age === 'missing') {
+          errors.push('Critical: No insured person data extracted');
+        }
+        
+        if (unified.total_premium_after_discounts === 'missing') {
+          errors.push('Critical: No premium amount extracted');
+        }
+        
+        return errors;
+      }
+
+      function calculateDataQualityScore(offer: typeof unifiedOffer): number {
+        let score = 1.0;
+        
+        // Odjęcie punktów za brakujące pola
+        score -= offer.missing_fields.length * 0.1;
+        
+        // Odjęcie za niską pewność
+        if (offer.extraction_confidence === 'low') score -= 0.3;
+        if (offer.extraction_confidence === 'medium') score -= 0.15;
+        
+        // Odjęcie za puste kluczowe pola
+        if (offer.insured.length === 0) score -= 0.2;
+        if (offer.total_premium_after_discounts === 'missing') score -= 0.25;
+        
+        return Math.max(0, score);
+      }
+
+      const validationErrors = validateExtractedData(finalData, unifiedOffer);
+      if (validationErrors.length > 0) {
+        console.warn('⚠️ Data quality issues:', validationErrors);
+        finalData.validation_warnings = validationErrors;
+      }
+
+      const dataQualityScore = calculateDataQualityScore(unifiedOffer);
+      finalData.data_quality_score = dataQualityScore;
+
+      if (dataQualityScore < 0.5) {
+        console.error('🚨 LOW DATA QUALITY ALERT', {
+          document_id,
+          score: dataQualityScore,
+          missing_fields: unifiedOffer.missing_fields,
+          confidence: unifiedOffer.extraction_confidence,
+          validation_errors: validationErrors
+        });
+      } else {
+        console.log('✅ Data quality score:', dataQualityScore.toFixed(2));
+      }
+
+      console.log('✅ Step 23: Updating document with extracted data...');
 
     // Update document with extracted data
     const { data: updateData, error: updateError } = await supabase
