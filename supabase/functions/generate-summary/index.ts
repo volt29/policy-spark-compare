@@ -510,9 +510,20 @@ serve(async (req) => {
         throw updateError;
       }
     } catch (updateError) {
-      const message = updateError instanceof Error ? updateError.message : String(updateError);
-      console.error("Failed to persist summary", { comparison_id, message });
-      throw new Error(`Failed to update summary: ${message}`);
+      // Properly serialize Supabase error objects
+      const errorDetails = updateError instanceof Error 
+        ? updateError.message 
+        : typeof updateError === 'object' && updateError !== null
+          ? JSON.stringify(updateError)
+          : String(updateError);
+      
+      console.error("Failed to persist summary", { 
+        comparison_id, 
+        error: updateError,
+        errorDetails 
+      });
+      
+      throw new Error(`Failed to update summary: ${errorDetails}`);
     }
 
     console.log("Summary generated successfully:", comparison_id);
