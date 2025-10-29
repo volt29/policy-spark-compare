@@ -59,6 +59,7 @@ export type Database = {
           product_type: string | null
           report_url: string | null
           status: string
+          summary_json: Json | null
           summary_text: string | null
           user_id: string
         }
@@ -71,6 +72,7 @@ export type Database = {
           product_type?: string | null
           report_url?: string | null
           status?: string
+          summary_json?: Json | null
           summary_text?: string | null
           user_id: string
         }
@@ -83,6 +85,7 @@ export type Database = {
           product_type?: string | null
           report_url?: string | null
           status?: string
+          summary_json?: Json | null
           summary_text?: string | null
           user_id?: string
         }
