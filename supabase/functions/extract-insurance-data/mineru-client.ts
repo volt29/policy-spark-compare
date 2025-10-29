@@ -1921,7 +1921,10 @@ function classifyTextSegment(text: string): {
   };
 }
 
-export function convertMineruPagesToSections(pages: MineruPage[]): MineruSegmentationResult {
+export function convertMineruPagesToSections(
+  pages: MineruPage[],
+  fallbackText?: string,
+): MineruSegmentationResult {
   const sections: ParsedSection[] = [];
   const sources: SectionSource[] = [];
   const seen = new Set<string>();
@@ -1974,6 +1977,44 @@ export function convertMineruPagesToSections(pages: MineruPage[]): MineruSegment
         pageRange,
         snippet,
         confidence: classification.confidence,
+      });
+    }
+  }
+
+  if (sections.length === 0 && typeof fallbackText === 'string') {
+    const trimmedFallback = fallbackText.trim();
+
+    if (trimmedFallback.length > 0) {
+      const paragraphCandidates = trimmedFallback
+        .split(/\n{2,}/)
+        .map((entry) => entry.replace(/\s+/g, ' ').trim())
+        .filter((entry) => entry.length > 0)
+        .slice(0, 10);
+
+      if (paragraphCandidates.length === 0) {
+        paragraphCandidates.push(trimmedFallback.replace(/\s+/g, ' '));
+      }
+
+      paragraphCandidates.forEach((paragraph, index) => {
+        const classification = classifyTextSegment(paragraph);
+        const snippet = buildSnippet(paragraph);
+        const pageRange = { start: index + 1, end: index + 1 } as const;
+
+        sections.push({
+          type: classification.type,
+          content: paragraph,
+          keywords: classification.keywords,
+          confidence: classification.confidence,
+          pageRange,
+          snippet,
+        });
+
+        sources.push({
+          sectionType: classification.type,
+          pageRange,
+          snippet,
+          confidence: classification.confidence,
+        });
       });
     }
   }

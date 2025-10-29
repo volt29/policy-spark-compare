@@ -724,5 +724,15 @@ describe("convertMineruPagesToSections", () => {
     expect(result.sections[0]?.snippet).toContain("Only body text");
     expect(result.sections[0]?.content).toContain("Only body text");
   });
+
+  it("creates synthetic sections when only fallback text is available", () => {
+    const fallback = `Oferta ubezpieczeniowa\n\nSkładka roczna: 1200 PLN\n\nZakres ochrony obejmuje assistance.`;
+
+    const result = convertMineruPagesToSections([], fallback);
+
+    expect(result.sections.length).toBeGreaterThan(0);
+    expect(result.sections[0]?.content).toContain("Oferta ubezpieczeniowa");
+    expect(result.sources.length).toBe(result.sections.length);
+  });
 });
 

@@ -338,6 +338,7 @@ serve(async (req) => {
 
   let document_id: string | undefined;
   let supabase: any;
+  let documentMarkedAsCompleted = false;
 
   try {
     console.log('✅ Step 1: Request received');
@@ -535,7 +536,10 @@ serve(async (req) => {
       throw new Error(`MinerU extraction failed: ${message}`);
     }
 
-    const { sections, sources: segmentationSources } = convertMineruPagesToSections(mineruPages);
+    const { sections, sources: segmentationSources } = convertMineruPagesToSections(
+      mineruPages,
+      mineruText,
+    );
     const segmentationProductHeuristic = inferProductTypeFromText(mineruText, 'segmentation');
     const textConfidence = calculateExtractionConfidence(sections);
 
@@ -1002,6 +1006,8 @@ serve(async (req) => {
       throw new Error(`Failed to update document: ${updateError.message}`);
     }
 
+    documentMarkedAsCompleted = true;
+
     console.log('✅ Step 23: Document processed successfully:', document_id);
 
     // Note: No cleanup needed - we're using base64 directly, not storage
@@ -1078,5 +1084,36 @@ serve(async (req) => {
       JSON.stringify(responsePayload),
       { status: statusCode, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
+  } finally {
+    if (!documentMarkedAsCompleted && document_id && supabase) {
+      try {
+        const { data: docStatus } = await supabase
+          .from('documents')
+          .select('status, extracted_data')
+          .eq('id', document_id)
+          .single();
+
+        if (docStatus?.status === 'processing') {
+          await supabase
+            .from('documents')
+            .update({
+              status: 'failed',
+              extracted_data: {
+                ...(docStatus.extracted_data && typeof docStatus.extracted_data === 'object'
+                  ? docStatus.extracted_data
+                  : {}),
+                error: 'Extraction did not finish. The task will need to be restarted.',
+                failed_at: new Date().toISOString(),
+              },
+            })
+            .eq('id', document_id);
+        }
+      } catch (finalizeError) {
+        console.error('Failed to finalize document status after extraction error:', {
+          document_id,
+          message: finalizeError instanceof Error ? finalizeError.message : String(finalizeError),
+        });
+      }
+    }
   }
 });
