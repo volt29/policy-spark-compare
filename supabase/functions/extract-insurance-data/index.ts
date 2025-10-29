@@ -7,7 +7,8 @@ import {
   MineruClientError,
   MineruHttpError,
   MineruPage,
-  MineruStructuralSummary
+  MineruStructuralSummary,
+  sanitizePlainText
 } from './mineru-client.ts';
 import {
   ParsedSection,
@@ -512,9 +513,26 @@ serve(async (req) => {
         enableFormula: true,
       });
 
-      mineruPages = analysis.pages;
-      mineruText = analysis.text;
+      const sanitizedPages = analysis.pages.map((page) => ({
+        ...page,
+        text: typeof page.text === 'string' ? sanitizePlainText(page.text) : '',
+      }));
+      const sanitizedDocumentText = typeof analysis.text === 'string' ? sanitizePlainText(analysis.text) : '';
+      const fallbackDocumentText = sanitizePlainText(
+        sanitizedPages.map((page) => page.text).filter(Boolean).join('\n\n'),
+      );
+
+      mineruPages = sanitizedPages;
+      mineruText = sanitizedDocumentText || fallbackDocumentText;
       mineruStructureSummary = analysis.structureSummary;
+
+      if (!mineruText) {
+        console.warn('⚠️ MinerU: sanitized document text is empty', {
+          document_id,
+          pages: mineruPages.length,
+        });
+      }
+
       console.log('✅ MinerU: task completed', {
         pages: mineruPages.length,
         characters: mineruText.length,
@@ -776,12 +794,23 @@ serve(async (req) => {
 
     const pagesPerSegment = mineruPages.length > 6 ? 4 : 3;
     const segmentsCount = Math.max(1, Math.ceil(mineruPages.length / pagesPerSegment));
+    const looksLikeJson = (value: string) => {
+      const trimmed = value.trim();
+      return (
+        (trimmed.startsWith('{') && trimmed.endsWith('}'))
+        || (trimmed.startsWith('[') && trimmed.endsWith(']'))
+      );
+    };
 
     for (let segmentIndex = 0; segmentIndex < segmentsCount; segmentIndex++) {
       const start = segmentIndex * pagesPerSegment;
       const end = Math.min(start + pagesPerSegment, mineruPages.length);
       const segmentPages = mineruPages.slice(start, end);
-      const segmentText = segmentPages.map(page => page.text).join('\n\n');
+      const rawSegmentText = segmentPages.map(page => page.text ?? '').join('\n\n');
+      const segmentText = sanitizePlainText(rawSegmentText);
+      const safeSegmentText = segmentText.length > 0
+        ? segmentText
+        : 'Brak rozpoznanego tekstu w tym segmencie MinerU.';
       const segmentPageStart = segmentPages[0]?.pageNumber ?? start + 1;
       const segmentPageEnd = segmentPages[segmentPages.length - 1]?.pageNumber ?? end;
 
@@ -807,7 +836,7 @@ serve(async (req) => {
       const segmentContent: LovableContentBlock[] = [
         {
           type: 'text',
-          text: `Segment ${segmentIndex + 1}/${segmentsCount}. Strony ${segmentPageStart}-${segmentPageEnd}. Tekst:\n\n${segmentText}`
+          text: `Segment ${segmentIndex + 1}/${segmentsCount}. Strony ${segmentPageStart}-${segmentPageEnd}. Tekst:\n\n${safeSegmentText}`
         },
         {
           type: 'text',
@@ -822,7 +851,19 @@ serve(async (req) => {
         });
       }
 
-      console.log(`🚚 Segment ${segmentIndex + 1}/${segmentsCount} wysłany do AI (długość tekstu: ${segmentText.length})`);
+      if (segmentText.length === 0) {
+        console.warn(`⚠️ Segment ${segmentIndex + 1}/${segmentsCount} pusty po sanitizacji`, {
+          document_id,
+          segmentPageStart,
+          segmentPageEnd,
+        });
+      } else if (looksLikeJson(segmentText)) {
+        console.warn(`⚠️ Segment ${segmentIndex + 1}/${segmentsCount} wygląda na JSON`, {
+          preview: segmentText.slice(0, 120),
+        });
+      }
+
+      console.log(`📝 Segment ${segmentIndex + 1}/${segmentsCount} długość tekstu: ${safeSegmentText.length}`);
 
       const aiSegmentData = await callLovableWithRetry(
         lovableApiKey,

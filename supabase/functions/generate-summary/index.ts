@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.75.0";
 import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
+import { sanitizePlainText } from "../extract-insurance-data/mineru-client.ts";
 
 const allowedOrigins = (Deno.env.get("CORS_ALLOWED_ORIGINS") || "")
   .split(",")
@@ -375,16 +376,32 @@ serve(async (req) => {
     const aiData = await aiResponse.json();
     const aiContent = aiData.choices?.[0]?.message?.content ?? "";
     const parsedSummary = parseSummaryResponse(aiContent);
-    const summaryPayload = JSON.stringify(parsedSummary.data);
+    const candidatePlainText =
+      parsedSummary.data.fallback_text
+      ?? parsedSummary.data.raw_text
+      ?? parsedSummary.rawText;
+    const summaryPlainText = typeof candidatePlainText === "string"
+      ? sanitizePlainText(candidatePlainText)
+      : "";
 
-    // Update comparison with summary
-    const { error: updateError } = await supabase
-      .from("comparisons")
-      .update({ summary_text: summaryPayload })
-      .eq("id", comparison_id);
+    console.log("📝 Summary plain text length:", summaryPlainText.length);
 
-    if (updateError) {
-      throw new Error(`Failed to update summary: ${updateError.message}`);
+    try {
+      const { error: updateError } = await supabase
+        .from("comparisons")
+        .update({
+          summary_text: summaryPlainText.length > 0 ? summaryPlainText : null,
+          summary_json: parsedSummary.data,
+        })
+        .eq("id", comparison_id);
+
+      if (updateError) {
+        throw updateError;
+      }
+    } catch (updateError) {
+      const message = updateError instanceof Error ? updateError.message : String(updateError);
+      console.error("Failed to persist summary", { comparison_id, message });
+      throw new Error(`Failed to update summary: ${message}`);
     }
 
     console.log("Summary generated successfully:", comparison_id);
